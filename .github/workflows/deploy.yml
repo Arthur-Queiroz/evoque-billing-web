@@ -71,11 +71,13 @@ jobs:
           set -eu
           ssh kvm2-evoque '
             set -eu
-            test -f /opt/evoque/current/infra/docker-compose.production.yml
+            if [ ! -f /opt/evoque/current/infra/docker-compose.production.yml ]; then
+              echo "Runtime ainda não instalado. A imagem web foi publicada e será usada pelo primeiro deploy da API."
+              exit 0
+            fi
             test -f /opt/evoque/production.env
             cd /opt/evoque/current
             docker compose --env-file /opt/evoque/production.env -f infra/docker-compose.production.yml pull web
             docker compose --env-file /opt/evoque/production.env -f infra/docker-compose.production.yml up -d web
             docker compose --env-file /opt/evoque/production.env -f infra/docker-compose.production.yml ps web
           '
-
