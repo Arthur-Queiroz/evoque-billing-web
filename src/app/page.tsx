@@ -184,6 +184,7 @@ export default function BillingApplication() {
   const [selectedYear, setSelectedYear] = useState(currentDate.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(currentDate.getMonth() + 1);
   const [environment, setEnvironment] = useState<AsaasEnvironment>("Sandbox");
+  const [pendingEnvironment, setPendingEnvironment] = useState<AsaasEnvironment | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
   const [members, setMembers] = useState<EvoMember[]>([]);
   const [corporateCatalogMembers, setCorporateCatalogMembers] = useState<CorporateMember[]>([]);
@@ -342,12 +343,25 @@ export default function BillingApplication() {
   }, [selectedMonth, selectedYear]);
 
   function selectEnvironment(targetEnvironment: AsaasEnvironment) {
+    if (targetEnvironment === environment) {
+      return;
+    }
+
     if (targetEnvironment === "Production" && !productionAvailable) {
       setNoticeMessage("Produção ainda não está disponível para consulta. Verifique a credencial na tela de Integrações.");
       return;
     }
-    setEnvironment(targetEnvironment);
-    if (targetEnvironment === "Production" && !integrationStatus?.production.chargeCreationEnabled) {
+    setPendingEnvironment(targetEnvironment);
+  }
+
+  function confirmEnvironmentChange() {
+    if (pendingEnvironment === null) {
+      return;
+    }
+
+    setEnvironment(pendingEnvironment);
+    setPendingEnvironment(null);
+    if (pendingEnvironment === "Production" && !integrationStatus?.production.chargeCreationEnabled) {
       setNoticeMessage("Produção selecionada em modo de consulta. A emissão de cobranças reais permanece bloqueada.");
     }
   }
@@ -690,6 +704,14 @@ export default function BillingApplication() {
           onCancel={() => { setConfirmationBatch(null); setConfirmationText(""); }}
           onConfirmationTextChange={setConfirmationText}
           onConfirm={() => void executeBatch()}
+        />
+      )}
+      {pendingEnvironment && (
+        <EnvironmentSwitchModal
+          currentEnvironment={environment}
+          targetEnvironment={pendingEnvironment}
+          onCancel={() => setPendingEnvironment(null)}
+          onConfirm={confirmEnvironmentChange}
         />
       )}
     </main>
@@ -2023,6 +2045,48 @@ function IntegrationsPage({ status, activeCatalogCompanyCount, latestImport, onO
       <p className="mt-4 border-t border-slate-100 pt-4 text-sm text-slate-500">{activeCatalogCompanyCount} empresa(s) ativa(s) no catálogo.</p>
     </div>
   </section>;
+}
+
+function EnvironmentSwitchModal({ currentEnvironment, targetEnvironment, onCancel, onConfirm }: {
+  currentEnvironment: AsaasEnvironment;
+  targetEnvironment: AsaasEnvironment;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const isEnteringProduction = targetEnvironment === "Production";
+  const targetDescription = isEnteringProduction
+    ? "Você passará a consultar dados reais do Asaas. Uma execução posterior de lote poderá criar cobranças reais, sempre após aprovação e confirmação explícita."
+    : "Você voltará ao ambiente de testes. As cobranças criadas nele não afetam clientes reais.";
+
+  return <div aria-modal="true" className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-[2px]" role="dialog">
+    <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div className={`border-b px-6 py-5 ${isEnteringProduction ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className={`text-xs font-extrabold uppercase tracking-[0.16em] ${isEnteringProduction ? "text-red-700" : "text-amber-700"}`}>Troca de ambiente</p>
+            <h2 className="mt-1 text-xl font-extrabold text-slate-950">Mudar para {targetEnvironment}?</h2>
+          </div>
+          <button aria-label="Cancelar troca de ambiente" className="rounded-lg p-2 text-slate-500 transition hover:bg-white/70 hover:text-slate-900" onClick={onCancel}><X size={19} /></button>
+        </div>
+      </div>
+      <div className="p-6">
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3"><p className="text-xs font-extrabold uppercase tracking-wide text-slate-500">Atual</p><p className="mt-1 font-extrabold text-slate-900">{currentEnvironment}</p></div>
+          <ChevronRight className="text-orange" size={22} />
+          <div className={`rounded-xl border px-4 py-3 ${isEnteringProduction ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}`}><p className={`text-xs font-extrabold uppercase tracking-wide ${isEnteringProduction ? "text-red-700" : "text-amber-700"}`}>Destino</p><p className="mt-1 font-extrabold text-slate-900">{targetEnvironment}</p></div>
+        </div>
+        <div className={`mt-5 rounded-xl border p-4 text-sm leading-6 ${isEnteringProduction ? "border-red-200 bg-red-50 text-red-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+          <p className="font-extrabold">{isEnteringProduction ? "Atenção ao ambiente real" : "Ambiente seguro para testes"}</p>
+          <p className="mt-1">{targetDescription}</p>
+        </div>
+        <p className="mt-5 text-sm leading-6 text-slate-500">Apenas trocar o ambiente não cria nenhuma cobrança.</p>
+        <div className="mt-6 flex justify-end gap-2">
+          <button className="button-secondary" onClick={onCancel}>Manter {currentEnvironment}</button>
+          <button className={isEnteringProduction ? "inline-flex items-center justify-center gap-2 rounded-lg bg-red-700 px-4 py-2.5 text-sm font-extrabold text-white transition hover:bg-red-800 focus:outline-none focus:ring-2 focus:ring-red-300" : "button-primary"} onClick={onConfirm}>Entrar em {targetEnvironment}</button>
+        </div>
+      </div>
+    </div>
+  </div>;
 }
 
 function ConfirmationModal({ batch, confirmationText, environment, onCancel, onConfirmationTextChange, onConfirm }: { batch: ChargeBatch; confirmationText: string; environment: AsaasEnvironment; onCancel: () => void; onConfirmationTextChange: (value: string) => void; onConfirm: () => void }) {
