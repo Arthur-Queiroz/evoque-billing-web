@@ -21,11 +21,13 @@ import {
   Search,
   Settings2,
   ShieldCheck,
+  UploadCloud,
   UsersRound,
   Wifi,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   api,
   AsaasEnvironment,
@@ -38,7 +40,7 @@ import {
   CompanyCatalogImportResult,
   CompanyCatalogImportSummary,
   CompanyFilters,
-  CompanyMember,
+  CorporateMember,
   CompanySchedule,
   EvoCorporateMember,
   EvoMember,
@@ -60,7 +62,7 @@ type Page =
   | "integrations";
 
 /** Filtros oferecidos na tela de empresas, na ordem em que aparecem. */
-type CompanyFilterKey = "all" | "active" | "inactive" | "withoutBillingDay" | "withoutAsaas" | "unseen";
+type CompanyFilterKey = "all" | "active" | "inactive" | "withoutBillingDay" | "withoutAsaas";
 
 const companyFilterOptions: Array<{ key: CompanyFilterKey; label: string }> = [
   { key: "all", label: "Todas" },
@@ -68,7 +70,6 @@ const companyFilterOptions: Array<{ key: CompanyFilterKey; label: string }> = [
   { key: "inactive", label: "Inativas" },
   { key: "withoutBillingDay", label: "Sem dia" },
   { key: "withoutAsaas", label: "Sem Asaas" },
-  { key: "unseen", label: "Não vistas na última importação" },
 ];
 
 function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyFilters {
@@ -83,8 +84,6 @@ function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyF
     filters.withoutBillingDay = true;
   } else if (filterKey === "withoutAsaas") {
     filters.asaasLink = "pending";
-  } else if (filterKey === "unseen") {
-    filters.seenInLastImport = false;
   }
 
   return filters;
@@ -94,8 +93,6 @@ function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyF
 interface CompanyFormValues {
   displayName: string;
   billingDay: number | null;
-  asaasSandboxCustomerId: string | null;
-  asaasProductionCustomerId: string | null;
 }
 
 function companySourceLabel(source: Company["source"]): string {
@@ -121,9 +118,20 @@ function registryStatusLabel(company: Company): string {
 
 const operatorId = "operador-web";
 const billingDays = [2, 18, 20, 25];
+const controlledSandboxEmail = "arthurdequeiroz2005@gmail.com";
 
 function money(value: number | null | undefined): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value ?? 0);
+}
+
+function fileSize(sizeInBytes: number): string {
+  if (sizeInBytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(sizeInBytes / 1024))} KB`;
+  }
+
+  return `${(sizeInBytes / (1024 * 1024)).toLocaleString("pt-BR", {
+    maximumFractionDigits: 1,
+  })} MB`;
 }
 
 function date(value: string | null | undefined): string {
@@ -178,9 +186,7 @@ export default function BillingApplication() {
   const [environment, setEnvironment] = useState<AsaasEnvironment>("Sandbox");
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
   const [members, setMembers] = useState<EvoMember[]>([]);
-  const [corporateMembers, setCorporateMembers] = useState<EvoCorporateMember[]>([]);
-  const [nextCorporateMemberOffset, setNextCorporateMemberOffset] = useState(0);
-  const [hasMoreCorporateMembers, setHasMoreCorporateMembers] = useState(false);
+  const [corporateCatalogMembers, setCorporateCatalogMembers] = useState<CorporateMember[]>([]);
   const [schedules, setSchedules] = useState<CompanySchedule[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [drafts, setDrafts] = useState<BillingDraft[]>([]);
@@ -213,16 +219,15 @@ export default function BillingApplication() {
     () => catalogCompanies.filter((company) => company.isActive).length,
     [catalogCompanies],
   );
-  const visibleCorporateMembers = useMemo(() => {
+  const visibleCorporateCatalogMembers = useMemo(() => {
     const normalizedSearch = memberSearch.trim().toLocaleLowerCase("pt-BR");
-    if (!normalizedSearch) return corporateMembers;
-    return corporateMembers.filter((member) => `${member.memberName} ${member.membershipName ?? ""} ${member.corporatePartnershipName}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
-  }, [corporateMembers, memberSearch]);
-  const visibleMembers = useMemo(() => {
-    const normalizedSearch = memberSearch.trim().toLocaleLowerCase("pt-BR");
-    if (!normalizedSearch) return members;
-    return members.filter((member) => `${member.firstName} ${member.lastName ?? ""} ${member.branchName}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
-  }, [memberSearch, members]);
+    if (!normalizedSearch) return corporateCatalogMembers;
+    return corporateCatalogMembers.filter((member) =>
+      `${member.memberName} ${member.companyName} ${member.contracts.join(" ")} ${member.evoMemberId}`
+        .toLocaleLowerCase("pt-BR")
+        .includes(normalizedSearch),
+    );
+  }, [corporateCatalogMembers, memberSearch]);
   const selectedCompany = useMemo(
     () => catalogCompanies.find((company) => company.taxId === selectedCompanyTaxId) ?? null,
     [catalogCompanies, selectedCompanyTaxId],
@@ -247,21 +252,13 @@ export default function BillingApplication() {
         refreshCatalogCompanies(),
         refreshBillingData(selectedYear, selectedMonth),
       ]);
+      setCorporateCatalogMembers(await api.getCorporateCatalogMembers());
 
       // O catálogo interno não depende das consultas de diretório do EVO. Uma
       // indisponibilidade do EVO deixa apenas Colaboradores sem atualização.
-      const [memberResult, corporateMemberResult] = await Promise.allSettled([
-        api.getMembers(),
-        api.getCorporateMembers(),
-      ]);
+      const [memberResult] = await Promise.allSettled([api.getMembers()]);
       if (memberResult.status === "fulfilled") {
         setMembers(memberResult.value.members);
-      }
-      if (corporateMemberResult.status === "fulfilled") {
-        const corporateMemberData = corporateMemberResult.value;
-        setCorporateMembers(corporateMemberData.corporateMembers);
-        setNextCorporateMemberOffset(corporateMemberData.offset + corporateMemberData.processedMemberMembershipCount);
-        setHasMoreCorporateMembers(corporateMemberData.processedMemberMembershipCount === corporateMemberData.limit);
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar a API.");
@@ -292,23 +289,6 @@ export default function BillingApplication() {
       await refreshCatalogCompanies(filterKey, search);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar o catálogo de empresas.");
-    }
-  }
-
-  async function loadMoreCorporateMembers() {
-    if (!hasMoreCorporateMembers || isRefreshing) return;
-
-    setIsRefreshing(true);
-    setErrorMessage(null);
-    try {
-      const corporateMemberData = await api.getCorporateMembers(nextCorporateMemberOffset);
-      setCorporateMembers((currentMembers) => [...currentMembers, ...corporateMemberData.corporateMembers]);
-      setNextCorporateMemberOffset(corporateMemberData.offset + corporateMemberData.processedMemberMembershipCount);
-      setHasMoreCorporateMembers(corporateMemberData.processedMemberMembershipCount === corporateMemberData.limit);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível carregar mais vínculos corporativos do Evo.");
-    } finally {
-      setIsRefreshing(false);
     }
   }
 
@@ -423,6 +403,43 @@ export default function BillingApplication() {
     }
   }
 
+  async function synchronizeCompanyAsaasSandbox(company: Company, email: string) {
+    try {
+      const synchronization = await api.synchronizeCatalogCompanyAsaasSandbox(
+        company.taxId,
+        email,
+        operatorId,
+      );
+      setNoticeMessage(synchronization.message);
+      await refreshCatalogCompanies();
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Não foi possível preparar o cliente de teste no Asaas Sandbox.";
+      setErrorMessage(message);
+    }
+  }
+
+  async function synchronizeCompanyAsaasProduction(company: Company) {
+    try {
+      const synchronization = await api.synchronizeCatalogCompanyAsaasProduction(
+        company.taxId,
+        operatorId,
+      );
+      if (synchronization.status === "Linked") {
+        setNoticeMessage(synchronization.message);
+      } else {
+        setErrorMessage(synchronization.message);
+      }
+      await refreshCatalogCompanies();
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Não foi possível localizar o cliente no Asaas Produção.";
+      setErrorMessage(message);
+    }
+  }
+
   async function createBatchPreview(scheduled: boolean) {
     const dueDate = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}-${String(Number(scheduleDay)).padStart(2, "0")}`;
     try {
@@ -516,7 +533,7 @@ export default function BillingApplication() {
                 activeCatalogCompanies={activeCatalogCompanyCount}
                 environment={environment}
                 memberValue={totalMemberValue}
-                members={members.length}
+                members={corporateCatalogMembers.filter((member) => member.isActive).length}
                 periodExists={Boolean(selectedPeriod)}
                 selectedYear={selectedYear}
                 selectedMonth={selectedMonth}
@@ -524,7 +541,7 @@ export default function BillingApplication() {
                 onNavigate={setPage}
               />
             )}
-            {page === "members" && <CompactEvoMembersPage members={visibleMembers} corporateMembers={visibleCorporateMembers} search={memberSearch} onSearchChange={setMemberSearch} />}
+            {page === "members" && <CorporateMemberCrmPage members={visibleCorporateCatalogMembers} search={memberSearch} onSearchChange={setMemberSearch} onImport={() => setPage("companyCatalogImport")} />}
             {page === "companies" && (
               <CompaniesPage
                 companies={visibleCatalogCompanies}
@@ -549,7 +566,10 @@ export default function BillingApplication() {
                 onSynchronized={async (message) => {
                   setNoticeMessage(message);
                   setLatestCatalogImport(await api.getLatestCompanyCatalogImport());
-                  await refreshCatalogCompanies();
+                  await Promise.all([
+                    refreshCatalogCompanies(),
+                    api.getCorporateCatalogMembers().then(setCorporateCatalogMembers),
+                  ]);
                 }}
               />
             )}
@@ -561,6 +581,10 @@ export default function BillingApplication() {
                 onOpenCharges={() => setPage("dailyBilling")}
                 onRefreshRegistry={() => void refreshCompanyRegistry(selectedCompany)}
                 onSave={(values) => void saveCompany(selectedCompany.taxId, values)}
+                onSynchronizeSandbox={(email) => synchronizeCompanyAsaasSandbox(selectedCompany, email)}
+                onSynchronizeProduction={() => synchronizeCompanyAsaasProduction(selectedCompany)}
+                sandboxSynchronizationAvailable={integrationStatus?.sandbox.readOperationsEnabled ?? false}
+                productionSynchronizationAvailable={integrationStatus?.production.readOperationsEnabled ?? false}
               />
             )}
             {page === "charges" && (
@@ -702,7 +726,7 @@ function Overview({ activeDrafts, activeCatalogCompanies, environment, memberVal
       {!periodExists && <button className="button-primary" onClick={onCreatePeriod}><Plus size={17} />Iniciar faturamento</button>}
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <MetricCard icon={UsersRound} label="Pessoas no Evo" value={members.toString()} />
+      <MetricCard icon={UsersRound} label="Colaboradores corporativos ativos" value={members.toString()} />
       <MetricCard icon={Building2} label="Empresas ativas no catálogo" value={activeCatalogCompanies.toString()} />
       <MetricCard icon={FileText} label="Prévias aprovadas" value={activeDrafts.toString()} tone="amber" />
       <MetricCard icon={CircleDollarSign} label="Valor nas matrículas" value={money(memberValue)} tone="orange" />
@@ -759,13 +783,12 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
       <div>
         <h1 className="text-2xl font-extrabold tracking-tight">Empresas</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Catálogo interno de empresas pagadoras, identificado pelo CNPJ.
-          {latestImport ? ` Última sincronização em ${date(latestImport.synchronizedAt)}.` : " Nenhuma sincronização registrada."}
+          Cadastre e mantenha as empresas pagadoras pelo CNPJ. Os dados públicos são preenchidos automaticamente.
         </p>
       </div>
       <div className="flex flex-wrap gap-2">
-        <button className="button-secondary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Importar catálogo do EVO</button>
-        <button className="button-primary" onClick={onNewCompany}><Plus size={17} />Nova empresa</button>
+        <button className="button-secondary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Adicionar em lote</button>
+        <button className="button-primary" onClick={onNewCompany}><Plus size={17} />Adicionar empresa</button>
       </div>
     </div>
 
@@ -773,10 +796,10 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
       <div className="panel border-dashed px-6 py-12 text-center">
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-400"><Building2 size={24} /></div>
         <p className="mt-4 font-extrabold">O catálogo de empresas está vazio</p>
-        <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Importe a exportação completa do CRM 2.0 do EVO para descobrir as empresas pelo CNPJ, ou cadastre uma empresa manualmente. Nenhuma empresa de exemplo é criada.</p>
+        <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Adicione a primeira empresa pelo CNPJ. A razão social, o nome fantasia, a situação cadastral e o endereço serão consultados automaticamente.</p>
         <div className="mt-5 flex flex-wrap justify-center gap-2">
-          <button className="button-primary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Importar catálogo do EVO</button>
-          <button className="button-secondary" onClick={onNewCompany}><Plus size={17} />Nova empresa</button>
+          <button className="button-primary" onClick={onNewCompany}><Plus size={17} />Adicionar empresa</button>
+          <button className="button-secondary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Adicionar várias</button>
         </div>
       </div>
     ) : <>
@@ -823,8 +846,6 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
               <td className="px-5 py-4 text-slate-600">{companySourceLabel(company.source)}</td>
               <td className="px-5 py-4">
                 <span className={`badge ${company.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{company.isActive ? "Ativa" : "Inativa"}</span>
-                {company.requiresReviewAfterReappearing && <p className="mt-1 text-xs font-semibold text-amber-700">Reapareceu na planilha · conferir</p>}
-                {!company.seenInLastImport && latestImport && <p className="mt-1 text-xs text-slate-500">Não vista na última sincronização</p>}
               </td>
               <td className="px-5 py-4 text-right"><button className="button-secondary h-9" onClick={() => onOpenCompany(company)}>Abrir</button></td>
             </tr>
@@ -865,7 +886,7 @@ function SpreadsheetImportPage({
 }) {
   const [spreadsheetFile, setSpreadsheetFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<BillingSpreadsheetPreview | null>(null);
-  const [sandboxEmail, setSandboxEmail] = useState("");
+  const [sandboxEmail, setSandboxEmail] = useState(controlledSandboxEmail);
   const [localError, setLocalError] = useState<string | null>(null);
   const [isReading, setIsReading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -918,17 +939,20 @@ function SpreadsheetImportPage({
       }
 
       const company = preview.companies[0];
-      const customerResult = await api.createSandboxAsaasCustomer(
-        company.companyName,
+      const customerResult = await api.synchronizeCatalogCompanyAsaasSandbox(
         company.companyTaxId,
         sandboxEmail.trim(),
+        operatorId,
       );
+      if (!customerResult.customerId) {
+        throw new Error("O cliente de teste não pôde ser vinculado ao catálogo da empresa.");
+      }
       const importResult = await api.createBillingDraftsFromSpreadsheet(
         selectedYear,
         selectedMonth,
         spreadsheetFile,
         operatorId,
-        customerResult.customer.id,
+        customerResult.customerId,
       );
       await onImported(
         `${importResult.billingDrafts.length} prévia(s) criada(s) a partir da planilha. Revise e aprove antes de gerar o lote Sandbox.`,
@@ -1160,6 +1184,92 @@ function CompactEvoMembersPage({ members, corporateMembers, search, onSearchChan
   </section>;
 }
 
+function CorporateMemberCrmPage({
+  members,
+  search,
+  onSearchChange,
+  onImport,
+}: {
+  members: CorporateMember[];
+  search: string;
+  onSearchChange: (value: string) => void;
+  onImport: () => void;
+}) {
+  const activeMemberCount = members.filter((member) => member.isActive).length;
+  const inactiveMemberCount = members.length - activeMemberCount;
+
+  return <section>
+    <PageHeading
+      title="Colaboradores corporativos"
+      description="Base persistente comparada com a exportação completa de clientes ativos do CRM 2.0."
+      action={<button className="button-primary" onClick={onImport}><FileSpreadsheet size={17} />Atualizar pelo EVO</button>}
+    />
+
+    <div className="mb-5 grid gap-3 sm:grid-cols-3">
+      <ImportMetric label="Ativos" value={activeMemberCount.toString()} />
+      <ImportMetric label="Inativos" value={inactiveMemberCount.toString()} />
+      <ImportMetric label="Total no histórico" value={members.length.toString()} />
+    </div>
+
+    <div className="mb-4 flex max-w-xl items-center gap-2">
+      <Search className="absolute ml-3 text-slate-400" size={17} />
+      <input
+        className="field w-full pl-10"
+        placeholder="Buscar colaborador, empresa, contrato ou ID EVO"
+        value={search}
+        onChange={(event) => onSearchChange(event.target.value)}
+      />
+    </div>
+
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="min-w-[900px] w-full text-left text-sm">
+          <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-5 py-3">Colaborador</th>
+              <th className="px-5 py-3">Empresa pagadora</th>
+              <th className="px-5 py-3">Contratos</th>
+              <th className="px-5 py-3">Situação</th>
+              <th className="px-5 py-3">Última confirmação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map((member) => (
+              <tr key={member.evoMemberId} className="border-b border-slate-100 last:border-0">
+                <td className="px-5 py-4">
+                  <p className="font-bold">{member.memberName}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">ID EVO {member.evoMemberId}</p>
+                </td>
+                <td className="px-5 py-4">
+                  <p className="font-semibold text-slate-700">{member.companyName}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">{member.formattedCompanyTaxId}</p>
+                </td>
+                <td className="px-5 py-4">
+                  <div className="flex max-w-[360px] flex-wrap gap-1.5">
+                    {member.contracts.length === 0
+                      ? <span className="text-slate-400">Não informado</span>
+                      : member.contracts.slice(0, 2).map((contract) => (
+                        <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600" key={contract}>{contract}</span>
+                      ))}
+                    {member.contracts.length > 2 && <span className="rounded bg-orange/10 px-2 py-1 text-xs font-extrabold text-orange">+{member.contracts.length - 2}</span>}
+                  </div>
+                </td>
+                <td className="px-5 py-4">
+                  <span className={`badge ${member.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+                    {member.isActive ? "Ativo" : "Saiu do corporativo"}
+                  </span>
+                </td>
+                <td className="px-5 py-4 text-slate-600">{date(member.lastSeenAt)}</td>
+              </tr>
+            ))}
+            {members.length === 0 && <EmptyTable colSpan={5} message="Importe uma exportação completa do CRM 2.0 para iniciar a base de colaboradores corporativos." />}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>;
+}
+
 function EvoMembersPage({ members, corporateMembers, search, onSearchChange }: {
   members: EvoMember[];
   corporateMembers: EvoCorporateMember[];
@@ -1212,27 +1322,41 @@ function CorporateMembersPage({ members, hasMore, search, onLoadMore, onSearchCh
   </section>;
 }
 
-function CompanyDetailPage({ company, onBack, onChangeStatus, onOpenCharges, onRefreshRegistry, onSave }: {
+function CompanyDetailPage({
+  company,
+  onBack,
+  onChangeStatus,
+  onOpenCharges,
+  onRefreshRegistry,
+  onSave,
+  onSynchronizeSandbox,
+  onSynchronizeProduction,
+  sandboxSynchronizationAvailable,
+  productionSynchronizationAvailable,
+}: {
   company: Company;
   onBack: () => void;
   onChangeStatus: (activate: boolean) => void;
   onOpenCharges: () => void;
   onRefreshRegistry: () => void;
   onSave: (values: CompanyFormValues) => void;
+  onSynchronizeSandbox: (email: string) => Promise<void>;
+  onSynchronizeProduction: () => Promise<void>;
+  sandboxSynchronizationAvailable: boolean;
+  productionSynchronizationAvailable: boolean;
 }) {
   const [displayName, setDisplayName] = useState(company.displayName);
   const [billingDay, setBillingDay] = useState(company.billingDay ? String(company.billingDay) : "");
-  const [sandboxCustomerId, setSandboxCustomerId] = useState(company.asaasSandboxCustomerId ?? "");
-  const [productionCustomerId, setProductionCustomerId] = useState(company.asaasProductionCustomerId ?? "");
-  const [members, setMembers] = useState<CompanyMember[]>([]);
+  const [sandboxEmail, setSandboxEmail] = useState(controlledSandboxEmail);
+  const [isSynchronizingSandbox, setIsSynchronizingSandbox] = useState(false);
+  const [isSynchronizingProduction, setIsSynchronizingProduction] = useState(false);
+  const [members, setMembers] = useState<CorporateMember[]>([]);
   const [billingHistory, setBillingHistory] = useState<CompanyBillingHistoryEntry[]>([]);
   const [detailError, setDetailError] = useState<string | null>(null);
 
   useEffect(() => {
     setDisplayName(company.displayName);
     setBillingDay(company.billingDay ? String(company.billingDay) : "");
-    setSandboxCustomerId(company.asaasSandboxCustomerId ?? "");
-    setProductionCustomerId(company.asaasProductionCustomerId ?? "");
   }, [company]);
 
   useEffect(() => {
@@ -1255,6 +1379,24 @@ function CompanyDetailPage({ company, onBack, onChangeStatus, onOpenCharges, onR
   }, [company.taxId]);
 
   const address = company.registryAddress;
+
+  async function synchronizeSandbox() {
+    setIsSynchronizingSandbox(true);
+    try {
+      await onSynchronizeSandbox(sandboxEmail);
+    } finally {
+      setIsSynchronizingSandbox(false);
+    }
+  }
+
+  async function synchronizeProduction() {
+    setIsSynchronizingProduction(true);
+    try {
+      await onSynchronizeProduction();
+    } finally {
+      setIsSynchronizingProduction(false);
+    }
+  }
 
   return <section className="max-w-[1100px] animate-[fade-in_180ms_ease-out]">
     <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
@@ -1307,7 +1449,7 @@ function CompanyDetailPage({ company, onBack, onChangeStatus, onOpenCharges, onR
           <div className="overflow-x-auto"><table className="min-w-[560px] w-full text-left text-sm">
             <thead className="border-b border-slate-200 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Pessoa</th><th className="px-5 py-3">Contrato</th><th className="px-5 py-3 text-right">Linha</th></tr></thead>
             <tbody>
-              {members.map((member) => <tr key={`${member.sourceRowNumber}-${member.memberName}`} className="border-b border-slate-100 last:border-0"><td className="px-5 py-3.5 font-bold">{member.memberName}</td><td className="px-5 py-3.5 text-slate-600">{member.contractName ?? "Não informado"}</td><td className="px-5 py-3.5 text-right text-slate-500">{member.sourceRowNumber}</td></tr>)}
+              {members.map((member) => <tr key={member.evoMemberId} className="border-b border-slate-100 last:border-0"><td className="px-5 py-3.5"><p className="font-bold">{member.memberName}</p><p className="mt-0.5 text-xs text-slate-500">ID EVO {member.evoMemberId}</p></td><td className="px-5 py-3.5 text-slate-600">{member.contracts.join(", ") || "Não informado"}</td><td className="px-5 py-3.5 text-right"><span className={`badge ${member.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{member.isActive ? "Ativo" : "Inativo"}</span></td></tr>)}
               {members.length === 0 && <EmptyTable colSpan={3} message="Esta empresa ainda não apareceu em nenhuma sincronização do catálogo." />}
             </tbody>
           </table></div>
@@ -1325,40 +1467,95 @@ function CompanyDetailPage({ company, onBack, onChangeStatus, onOpenCharges, onR
         </div>
       </div>
 
-      <aside className="panel h-fit p-5">
-        <div className="flex items-center gap-2"><Settings2 size={19} className="text-orange" /><p className="font-extrabold">Dados operacionais</p></div>
-        <p className="mt-2 text-sm leading-6 text-slate-500">Configurar um cliente Asaas aqui apenas registra um vínculo existente. Nenhuma cobrança é criada.</p>
-        <form
-          className="mt-5 space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSave({
-              displayName,
-              billingDay: billingDay ? Number(billingDay) : null,
-              asaasSandboxCustomerId: sandboxCustomerId.trim() || null,
-              asaasProductionCustomerId: productionCustomerId.trim() || null,
-            });
-          }}
-        >
-          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional
-            <input className="field mt-1.5 w-full" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-          </label>
-          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
-            <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
-              <option value="">Sem dia definido</option>
-              {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
-            </select>
-          </label>
-          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Sandbox
-            <input className="field mt-1.5 w-full" placeholder="Opcional" value={sandboxCustomerId} onChange={(event) => setSandboxCustomerId(event.target.value)} />
-          </label>
-          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Produção
-            <input className="field mt-1.5 w-full" placeholder="Opcional" value={productionCustomerId} onChange={(event) => setProductionCustomerId(event.target.value)} />
-          </label>
-          <button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar</button>
-        </form>
-        <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Atualizada em {date(company.updatedAt)} por {company.updatedBy}.</p>
-      </aside>
+      <div className="h-fit space-y-5">
+        <aside className="panel p-5">
+          <div className="flex items-center gap-2"><Settings2 size={19} className="text-orange" /><p className="font-extrabold">Dados operacionais</p></div>
+          <p className="mt-2 text-sm leading-6 text-slate-500">Defina como a empresa aparece no portal e em qual dia ela participa do faturamento mensal.</p>
+          <form
+            className="mt-5 space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSave({
+                displayName,
+                billingDay: billingDay ? Number(billingDay) : null,
+              });
+            }}
+          >
+            <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional
+              <input className="field mt-1.5 w-full" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            </label>
+            <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
+              <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
+                <option value="">Sem dia definido</option>
+                {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
+              </select>
+            </label>
+            <button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar dados</button>
+          </form>
+          <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Atualizada em {date(company.updatedAt)} por {company.updatedBy}.</p>
+        </aside>
+
+        <aside className="panel overflow-hidden">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <div className="flex items-center gap-2"><CreditCard size={19} className="text-orange" /><p className="font-extrabold">Integração com Asaas</p></div>
+            <p className="mt-2 text-sm leading-6 text-slate-500">Os clientes são localizados automaticamente pelo CNPJ. Você não precisa copiar identificadores.</p>
+          </div>
+
+          <div className="p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-extrabold">Ambiente de teste</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">Se não existir, um cliente espelho será criado somente no Sandbox.</p>
+              </div>
+              <span className={`badge shrink-0 ${company.asaasSandboxCustomerId ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                {company.asaasSandboxCustomerId ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
+                {company.asaasSandboxCustomerId ? "Vinculado" : "Pendente"}
+              </span>
+            </div>
+            <label className="mt-4 block text-xs font-extrabold uppercase tracking-wide text-slate-500">E-mail controlado para testes
+              <input
+                className="field mt-1.5 w-full normal-case"
+                type="email"
+                value={sandboxEmail}
+                onChange={(event) => setSandboxEmail(event.target.value)}
+              />
+            </label>
+            <button
+              className="button-secondary mt-3 w-full"
+              disabled={!sandboxSynchronizationAvailable || isSynchronizingSandbox || !sandboxEmail.trim()}
+              onClick={() => void synchronizeSandbox()}
+              type="button"
+            >
+              {isSynchronizingSandbox ? <LoaderCircle className="animate-spin" size={17} /> : <RefreshCw size={17} />}
+              {company.asaasSandboxCustomerId ? "Verificar novamente" : "Preparar Sandbox"}
+            </button>
+            {!sandboxSynchronizationAvailable && <p className="mt-2 text-xs leading-5 text-amber-700">As credenciais Sandbox ainda não estão disponíveis nesta API.</p>}
+          </div>
+
+          <div className="border-t border-slate-200 bg-slate-50/70 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-extrabold">Cliente real</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">A consulta em Produção é somente leitura. Nada será criado ou alterado no Asaas.</p>
+              </div>
+              <span className={`badge shrink-0 ${company.asaasProductionCustomerId ? "bg-emerald-50 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>
+                {company.asaasProductionCustomerId ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
+                {company.asaasProductionCustomerId ? "Vinculado" : "Não verificado"}
+              </span>
+            </div>
+            <button
+              className="button-secondary mt-4 w-full"
+              disabled={!productionSynchronizationAvailable || isSynchronizingProduction}
+              onClick={() => void synchronizeProduction()}
+              type="button"
+            >
+              {isSynchronizingProduction ? <LoaderCircle className="animate-spin" size={17} /> : <Search size={17} />}
+              Localizar por CNPJ
+            </button>
+            {!productionSynchronizationAvailable && <p className="mt-2 text-xs leading-5 text-slate-500">Disponível quando a API de produção estiver com a credencial Asaas configurada.</p>}
+          </div>
+        </aside>
+      </div>
     </div>
   </section>;
 }
@@ -1371,12 +1568,10 @@ function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (
   const [taxId, setTaxId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [billingDay, setBillingDay] = useState("");
-  const [sandboxCustomerId, setSandboxCustomerId] = useState("");
-  const [productionCustomerId, setProductionCustomerId] = useState("");
 
   return <section className="max-w-[640px] animate-[fade-in_180ms_ease-out]">
     <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
-    <PageHeading title="Nova empresa" description="Cadastre uma empresa pagadora que ainda não apareceu na planilha do EVO. O CNPJ é validado antes de salvar." />
+    <PageHeading title="Adicionar empresa" description="Informe o CNPJ. O cadastro público completa automaticamente os dados disponíveis." />
     <form
       className="panel space-y-3 p-5"
       onSubmit={(event) => {
@@ -1384,16 +1579,14 @@ function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (
         onCreate(taxId, {
           displayName,
           billingDay: billingDay ? Number(billingDay) : null,
-          asaasSandboxCustomerId: sandboxCustomerId.trim() || null,
-          asaasProductionCustomerId: productionCustomerId.trim() || null,
         });
       }}
     >
       <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">CNPJ
         <input className="field mt-1.5 w-full" required placeholder="00.000.000/0000-00" value={taxId} onChange={(event) => setTaxId(event.target.value)} />
       </label>
-      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional
-        <input className="field mt-1.5 w-full" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional <span className="normal-case font-semibold text-slate-400">· opcional</span>
+        <input className="field mt-1.5 w-full" placeholder="Se vazio, usaremos o nome da BrasilAPI" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
       </label>
       <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
         <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
@@ -1401,12 +1594,9 @@ function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (
           {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
         </select>
       </label>
-      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Sandbox
-        <input className="field mt-1.5 w-full" placeholder="Opcional" value={sandboxCustomerId} onChange={(event) => setSandboxCustomerId(event.target.value)} />
-      </label>
-      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Produção
-        <input className="field mt-1.5 w-full" placeholder="Opcional" value={productionCustomerId} onChange={(event) => setProductionCustomerId(event.target.value)} />
-      </label>
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+        O CNPJ identifica a empresa no catálogo. Os dados cadastrais e o vínculo com o Asaas são resolvidos automaticamente, sem copiar identificadores.
+      </div>
       <button className="button-primary w-full" type="submit"><Plus size={17} />Cadastrar empresa</button>
     </form>
   </section>;
@@ -1420,12 +1610,21 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
   const [preview, setPreview] = useState<CompanyCatalogImportPreview | null>(null);
   const [result, setResult] = useState<CompanyCatalogImportResult | null>(null);
   const [isWorking, setIsWorking] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [completeSnapshotConfirmed, setCompleteSnapshotConfirmed] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
 
   async function loadPreview(file: File) {
+    if (!file.name.toLocaleLowerCase("pt-BR").endsWith(".xlsx")) {
+      setImportError("Selecione uma planilha do EVO no formato .xlsx.");
+      return;
+    }
+
     setIsWorking(true);
     setImportError(null);
     setResult(null);
+    setPreview(null);
+    setCompleteSnapshotConfirmed(false);
     try {
       setSelectedFile(file);
       setPreview(await api.previewCompanyCatalogImport(file));
@@ -1443,16 +1642,19 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
     setIsWorking(true);
     setImportError(null);
     try {
-      const synchronization = await api.synchronizeCompanyCatalog(selectedFile, operatorId);
+      const synchronization = await api.synchronizeCompanyCatalog(
+        selectedFile,
+        operatorId,
+        completeSnapshotConfirmed,
+      );
       setResult(synchronization);
       await onSynchronized(
-        `Catálogo sincronizado: ${synchronization.createdCompanyCount} criada(s), `
-        + `${synchronization.updatedCompanyCount} atualizada(s), `
-        + `${synchronization.preservedCompanyCount} com nome operacional preservado, `
-        + `${synchronization.unseenCompanyCount} não vista(s) nesta planilha.`,
+        `${synchronization.createdCompanyCount} empresa(s) adicionada(s). `
+        + `${synchronization.memberComparison.newMemberCount} colaborador(es) novo(s), `
+        + `${synchronization.memberComparison.departedMemberCount} inativado(s).`,
       );
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : "Não foi possível sincronizar o catálogo.");
+      setImportError(error instanceof Error ? error.message : "Não foi possível adicionar as empresas da planilha.");
     } finally {
       setIsWorking(false);
     }
@@ -1460,43 +1662,111 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
 
   return <section className="max-w-[1040px] animate-[fade-in_180ms_ease-out]">
     <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
-    <PageHeading title="Importar catálogo do EVO" description="Use a exportação completa do CRM 2.0 para descobrir empresas pelo CNPJ." />
+    <PageHeading title="Atualizar empresas e colaboradores" description="Compare a exportação completa do CRM 2.0 com a base persistente antes de confirmar." />
 
     <Callout tone="warning">
-      Esta importação não usa valores financeiros e não cria prévia nem cobrança. Linhas com valor vazio, zero ou inválido continuam descobrindo a empresa.
+      Empresas já cadastradas não terão nome, dia de cobrança ou situação alterados. Os colaboradores serão comparados pelo IdCliente do EVO.
     </Callout>
 
     {importError && <Callout tone="error" onDismiss={() => setImportError(null)}>{importError}</Callout>}
 
-    <div className="panel p-5">
-      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Planilha .xlsx exportada do EVO
+    <div className="panel overflow-hidden">
+      <div className="border-b border-slate-200 px-6 py-5">
+        <p className="font-extrabold">Arquivo de origem</p>
+        <p className="mt-1 text-sm leading-6 text-slate-500">Selecione a exportação completa do CRM 2.0. O arquivo será analisado antes de qualquer cadastro.</p>
+      </div>
+      <label
+        className={`group m-6 flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center outline-none transition ${
+          isDraggingFile
+            ? "border-orange bg-orange/5 ring-4 ring-orange/10"
+            : selectedFile
+              ? "border-emerald-300 bg-emerald-50/40 hover:border-emerald-400"
+              : "border-slate-300 bg-slate-50/60 hover:border-orange hover:bg-orange/5"
+        }`}
+        htmlFor="company-catalog-file"
+        onDragEnter={() => setIsDraggingFile(true)}
+        onDragLeave={() => setIsDraggingFile(false)}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setIsDraggingFile(true);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setIsDraggingFile(false);
+          const file = event.dataTransfer.files?.[0];
+          if (file) void loadPreview(file);
+        }}
+        tabIndex={0}
+      >
         <input
-          className="field mt-1.5 w-full"
+          id="company-catalog-file"
+          className="sr-only"
           type="file"
-          accept=".xlsx"
-          onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadPreview(file); }}
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void loadPreview(file);
+            event.target.value = "";
+          }}
         />
+
+        <span className={`flex h-14 w-14 items-center justify-center rounded-xl ${
+          selectedFile ? "bg-emerald-100 text-emerald-700" : "bg-orange/10 text-orange"
+        }`}>
+          {isWorking
+            ? <LoaderCircle className="animate-spin" size={26} />
+            : selectedFile
+              ? <CheckCircle2 size={26} />
+              : <UploadCloud size={27} />}
+        </span>
+
+        {selectedFile ? (
+          <>
+            <p className="mt-4 max-w-full truncate text-base font-extrabold text-slate-900">{selectedFile.name}</p>
+            <p className="mt-1 text-sm text-slate-500">{fileSize(selectedFile.size)} · arquivo selecionado</p>
+            <span className="button-secondary mt-5 pointer-events-none">
+              <FileSpreadsheet size={17} />Trocar planilha
+            </span>
+          </>
+        ) : (
+          <>
+            <p className="mt-4 text-base font-extrabold text-slate-900">Arraste a planilha do EVO para cá</p>
+            <p className="mt-1 text-sm text-slate-500">ou escolha o arquivo no seu computador</p>
+            <span className="button-primary mt-5 pointer-events-none">
+              <FileSpreadsheet size={17} />Escolher planilha
+            </span>
+            <p className="mt-3 text-xs font-semibold text-slate-400">Somente .xlsx</p>
+          </>
+        )}
       </label>
-      {isWorking && <p className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-slate-500"><LoaderCircle className="animate-spin text-orange" size={17} />Processando a planilha...</p>}
+      {isWorking && <div className="border-t border-slate-200 bg-slate-50 px-6 py-3 text-sm font-bold text-slate-600"><span className="inline-flex items-center gap-2"><LoaderCircle className="animate-spin text-orange" size={17} />Lendo empresas, CNPJs e pessoas...</span></div>}
     </div>
 
     {preview && (
       <>
         <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <ImportMetric label="Empresas encontradas" value={preview.discoveredCompanyCount.toString()} />
+          <ImportMetric label="Novas empresas" value={preview.newCompanyCount.toString()} />
+          <ImportMetric label="Já cadastradas" value={preview.existingCompanyCount.toString()} />
           <ImportMetric label="Pessoas encontradas" value={preview.discoveredMemberCount.toString()} />
           <ImportMetric label="CNPJs inválidos" value={preview.invalidTaxIdCount.toString()} />
-          <ImportMetric label="Conflitos de nome" value={preview.nameConflictCount.toString()} />
           <ImportMetric label="Avisos" value={preview.warnings.length.toString()} />
         </div>
 
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <ImportMetric label="Colaboradores novos" value={preview.memberComparison.newMemberCount.toString()} />
+          <ImportMetric label="Permanecem ativos" value={preview.memberComparison.retainedMemberCount.toString()} />
+          <ImportMetric label="Saíram" value={preview.memberComparison.departedMemberCount.toString()} />
+          <ImportMetric label="Reativados" value={preview.memberComparison.reactivatedMemberCount.toString()} />
+          <ImportMetric label="Conflitos" value={preview.memberComparison.conflictMemberCount.toString()} />
+        </div>
+
         <div className="panel mt-5 overflow-hidden">
-          <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4"><p className="font-extrabold">Empresas que serão sincronizadas</p><p className="mt-1 text-sm text-slate-500">{preview.analyzedRowCount} linhas analisadas em {preview.fileName}.</p></div>
+          <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4"><p className="font-extrabold">Resultado da análise</p><p className="mt-1 text-sm text-slate-500">{preview.analyzedRowCount} linhas analisadas em {preview.fileName}. Somente as empresas marcadas como novas serão cadastradas.</p></div>
           <div className="max-h-[420px] overflow-auto"><table className="min-w-[640px] w-full text-left text-sm">
-            <thead className="sticky top-0 border-b border-slate-200 bg-white text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Empresa no EVO</th><th className="px-5 py-3">CNPJ</th><th className="px-5 py-3 text-right">Pessoas</th></tr></thead>
+            <thead className="sticky top-0 border-b border-slate-200 bg-white text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Empresa no EVO</th><th className="px-5 py-3">CNPJ</th><th className="px-5 py-3">Ação</th><th className="px-5 py-3 text-right">Pessoas</th></tr></thead>
             <tbody>
-              {preview.companies.map((company) => <tr key={company.taxId} className="border-b border-slate-100 last:border-0"><td className="px-5 py-3.5 font-bold">{company.evoName}</td><td className="px-5 py-3.5 text-slate-600">{company.formattedTaxId}</td><td className="px-5 py-3.5 text-right text-slate-600">{company.memberCount}</td></tr>)}
-              {preview.companies.length === 0 && <EmptyTable colSpan={3} message="Nenhuma empresa com CNPJ válido foi encontrada nesta planilha." />}
+              {preview.companies.map((company) => <tr key={company.taxId} className={`border-b border-slate-100 last:border-0 ${company.isAlreadyRegistered ? "bg-slate-50/70 text-slate-500" : ""}`}><td className="px-5 py-3.5 font-bold">{company.evoName}</td><td className="px-5 py-3.5">{company.formattedTaxId}</td><td className="px-5 py-3.5"><span className={`badge ${company.isAlreadyRegistered ? "bg-slate-200 text-slate-600" : "bg-emerald-50 text-emerald-700"}`}>{company.isAlreadyRegistered ? "Ignorar" : "Cadastrar"}</span></td><td className="px-5 py-3.5 text-right">{company.memberCount}</td></tr>)}
+              {preview.companies.length === 0 && <EmptyTable colSpan={4} message="Nenhuma empresa com CNPJ válido foi encontrada nesta planilha." />}
             </tbody>
           </table></div>
         </div>
@@ -1516,26 +1786,39 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
           </div>
         )}
 
-        <div className="panel mt-5 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="panel mt-5 flex flex-col gap-5 p-5">
           <div>
-            <p className="font-extrabold">Confirmar sincronização</p>
-            <p className="mt-1 text-sm text-slate-500">Nomes operacionais editados, agendas, situação e vínculos Asaas são preservados. Empresas ausentes não são inativadas.</p>
+            <p className="font-extrabold">Confirmar atualização do CRM</p>
+            <p className="mt-1 text-sm text-slate-500">Serão adicionadas {preview.newCompanyCount} empresa(s). Os colaboradores ausentes nesta exportação serão inativados, sem apagar histórico.</p>
           </div>
-          <button className="button-primary shrink-0" disabled={isWorking || preview.companies.length === 0} onClick={() => void synchronize()}><CheckCircle2 size={17} />Sincronizar catálogo</button>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950">
+            <input
+              className="mt-1 h-4 w-4 accent-orange"
+              type="checkbox"
+              checked={completeSnapshotConfirmed}
+              onChange={(event) => setCompleteSnapshotConfirmed(event.target.checked)}
+            />
+            <span><strong>Confirmo que esta é a exportação completa de clientes ativos do CRM 2.0.</strong><br />Um arquivo filtrado ou parcial poderia marcar colaboradores ausentes como inativos.</span>
+          </label>
+          <div className="flex justify-end">
+            <button className="button-primary shrink-0" disabled={isWorking || !completeSnapshotConfirmed || preview.memberComparison.conflictMemberCount > 0} onClick={() => void synchronize()}><CheckCircle2 size={17} />Atualizar base</button>
+          </div>
+          {preview.memberComparison.conflictMemberCount > 0 && <p className="text-sm font-semibold text-red-700">Resolva os conflitos de empresa antes de aplicar esta atualização. Nenhum colaborador será movido automaticamente.</p>}
         </div>
       </>
     )}
 
     {result && (
       <div className="panel mt-5 p-5">
-        <p className="font-extrabold">Resultado da sincronização</p>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <ImportMetric label="Criadas" value={result.createdCompanyCount.toString()} />
-          <ImportMetric label="Atualizadas" value={result.updatedCompanyCount.toString()} />
-          <ImportMetric label="Nome preservado" value={result.preservedCompanyCount.toString()} />
-          <ImportMetric label="Não vistas" value={result.unseenCompanyCount.toString()} />
+        <p className="font-extrabold">Inclusão concluída</p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <ImportMetric label="Adicionadas" value={result.createdCompanyCount.toString()} />
+          <ImportMetric label="Já existentes e ignoradas" value={result.ignoredExistingCompanyCount.toString()} />
           <ImportMetric label="Cadastro enriquecido" value={result.registryEnrichedCount.toString()} />
         </div>
+        <p className="mt-4 text-sm text-slate-600">
+          Colaboradores: {result.memberComparison.newMemberCount} novo(s), {result.memberComparison.retainedMemberCount} mantido(s), {result.memberComparison.departedMemberCount} inativado(s) e {result.memberComparison.reactivatedMemberCount} reativado(s).
+        </p>
         {result.registryUnavailableCount > 0 && (
           <p className="mt-3 text-sm text-slate-500">{result.registryUnavailableCount} empresa(s) ficaram sem dados do cadastro público. O catálogo continua funcionando com o nome do EVO.</p>
         )}
@@ -1570,24 +1853,23 @@ function IntegrationsPage({ status, activeCatalogCompanyCount, latestImport, onO
     <div className="panel mt-5 p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="font-extrabold">Sincronização do catálogo de empresas</p>
+          <p className="font-extrabold">Catálogo de empresas</p>
           <p className="mt-1 text-sm text-slate-500">
             {latestImport
-              ? `Última sincronização em ${date(latestImport.synchronizedAt)} por ${latestImport.operatorId}, a partir de ${latestImport.fileName}.`
-              : "Nenhuma sincronização registrada. Importe a exportação completa do CRM 2.0 do EVO para popular o catálogo."}
+              ? `Última inclusão em lote em ${date(latestImport.synchronizedAt)} por ${latestImport.operatorId}, a partir de ${latestImport.fileName}.`
+              : "O catálogo é permanente. Cadastre empresas individualmente ou use uma planilha para adicionar várias de uma vez."}
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
           <button className="button-secondary" onClick={onOpenCatalog}><Building2 size={17} />Abrir catálogo</button>
-          <button className="button-primary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Importar catálogo do EVO</button>
+          <button className="button-secondary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Adicionar em lote</button>
         </div>
       </div>
       {latestImport && (
         <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <SmallMetric label="Empresas encontradas" value={latestImport.discoveredCompanyCount.toString()} />
-          <SmallMetric label="Criadas" value={latestImport.createdCompanyCount.toString()} />
-          <SmallMetric label="Atualizadas" value={latestImport.updatedCompanyCount.toString()} />
-          <SmallMetric label="Não vistas" value={latestImport.unseenCompanyCount.toString()} />
+          <SmallMetric label="Adicionadas" value={latestImport.createdCompanyCount.toString()} />
+          <SmallMetric label="Já existentes" value={latestImport.ignoredExistingCompanyCount.toString()} />
           <SmallMetric label="Avisos" value={latestImport.warningCount.toString()} />
         </div>
       )}
@@ -1600,7 +1882,9 @@ function ConfirmationModal({ batch, confirmationText, environment, onCancel, onC
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between"><div><p className="text-lg font-extrabold">Confirmar execução</p><p className="mt-1 text-sm text-slate-500">Esta ação cria cobranças no Asaas.</p></div><button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100" onClick={onCancel}><X size={19} /></button></div><div className={`mt-5 rounded-xl p-4 ${environment === "Production" ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"}`}><p className="text-sm font-extrabold">{environment} · lote de {date(batch.dueDate)}</p><p className="mt-1 text-sm">{batch.items.length} cobrança(s) serão processadas.</p></div><label className="mt-5 block text-sm font-bold">Digite <span className="font-extrabold">CONFIRMAR</span> para continuar<input autoFocus className="field mt-2 w-full" value={confirmationText} onChange={(event) => onConfirmationTextChange(event.target.value)} /></label><div className="mt-6 flex justify-end gap-2"><button className="button-secondary" onClick={onCancel}>Cancelar</button><button className="button-primary" disabled={confirmationText.trim() !== "CONFIRMAR"} onClick={onConfirm}>Executar lote</button></div></div></div>;
 }
 
-function PageHeading({ title, description }: { title: string; description: string }) { return <div className="mb-6"><h1 className="text-2xl font-extrabold tracking-tight">{title}</h1><p className="mt-1 text-sm text-slate-500">{description}</p></div>; }
+function PageHeading({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
+  return <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div><h1 className="text-2xl font-extrabold tracking-tight">{title}</h1><p className="mt-1 text-sm text-slate-500">{description}</p></div>{action}</div>;
+}
 function SmallMetric({ label, value }: { label: string; value: string }) { return <div className="rounded-lg bg-slate-50 p-2.5"><p className="text-xs font-semibold text-slate-500">{label}</p><p className="mt-1 text-sm font-extrabold">{value}</p></div>; }
 function EmptyTable({ colSpan, message }: { colSpan: number; message: string }) { return <tr><td className="px-5 py-12 text-center text-sm text-slate-500" colSpan={colSpan}>{message}</td></tr>; }
 function Callout({ children, onDismiss, tone }: { children: React.ReactNode; onDismiss?: () => void; tone: "error" | "success" | "warning" }) { const styles = tone === "error" ? "border-red-200 bg-red-50 text-red-800" : tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"; return <div className={`mb-5 flex items-start gap-3 rounded-xl border p-4 text-sm ${styles}`}><CircleAlert className="mt-0.5 shrink-0" size={17} /><p className="flex-1">{children}</p>{onDismiss && <button aria-label="Fechar aviso" onClick={onDismiss}><X size={17} /></button>}</div>; }

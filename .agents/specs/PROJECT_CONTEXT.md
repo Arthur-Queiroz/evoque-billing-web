@@ -21,17 +21,22 @@ A importação não emite boleto.
 
 ## O que o client faz
 
-- consulta colaboradores expostos pela API;
+- consulta o CRM persistente de colaboradores corporativos exposto pela API;
 - lista, busca e filtra o catálogo interno de empresas;
-- importa a exportação completa do CRM 2.0 do EVO para sincronizar o catálogo,
-  sempre com conferência antes de confirmar;
+- cadastra empresas individualmente pelo CNPJ e permite inclusão opcional em
+  lote pela exportação do CRM 2.0;
 - cadastra, edita, inativa e reativa empresas, e pede atualização cadastral;
 - importa uma planilha de fechamento do Portal EVO;
 - mostra empresa, CNPJ, pessoas, avisos e total antes de persistir a prévia;
 - permite agendar empresas para os dias `02`, `18`, `20` e `25`;
 - prepara prévias e lotes de cobrança;
 - apresenta resultado e falhas por item;
-- mostra o estado das integrações e a última sincronização do catálogo.
+- mostra o estado das integrações e a última inclusão em lote.
+
+A exportação completa do CRM 2.0 atualiza duas dimensões independentes:
+adiciona somente empresas ainda inexistentes e compara o snapshot de
+colaboradores pelo `IdCliente`. A base preserva quem saiu como inativo e não
+move uma pessoa automaticamente entre CNPJs.
 
 ## O que o client não faz
 

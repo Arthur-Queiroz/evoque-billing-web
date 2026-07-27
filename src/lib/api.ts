@@ -3,6 +3,7 @@ export type AsaasEnvironment = "Sandbox" | "Production";
 export interface IntegrationEnvironmentStatus {
   environment: AsaasEnvironment;
   isConfigured: boolean;
+  readOperationsEnabled: boolean;
   chargeCreationEnabled: boolean;
 }
 
@@ -231,10 +232,32 @@ export interface Company {
   updatedBy: string;
 }
 
-export interface CompanyMember {
+export interface CorporateMember {
+  evoMemberId: number;
   memberName: string;
-  contractName: string | null;
+  companyTaxId: string;
+  formattedCompanyTaxId: string;
+  companyName: string;
+  contracts: string[];
+  isActive: boolean;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  deactivatedAt: string | null;
+}
+
+export interface CompanyCatalogImportedMember {
+  evoMemberId: number;
+  memberName: string;
+  contracts: string[];
   sourceRowNumber: number;
+}
+
+export interface CorporateMemberComparison {
+  newMemberCount: number;
+  retainedMemberCount: number;
+  departedMemberCount: number;
+  reactivatedMemberCount: number;
+  conflictMemberCount: number;
 }
 
 export interface CompanyBillingHistoryEntry {
@@ -253,8 +276,9 @@ export interface CompanyCatalogImportCompany {
   taxId: string;
   formattedTaxId: string;
   evoName: string;
+  isAlreadyRegistered: boolean;
   memberCount: number;
-  members: CompanyMember[];
+  members: CompanyCatalogImportedMember[];
 }
 
 export interface CompanyCatalogImportWarning {
@@ -267,10 +291,13 @@ export interface CompanyCatalogImportPreview {
   fileName: string;
   analyzedRowCount: number;
   discoveredCompanyCount: number;
+  newCompanyCount: number;
+  existingCompanyCount: number;
   discoveredMemberCount: number;
   duplicateMemberCount: number;
   invalidTaxIdCount: number;
   nameConflictCount: number;
+  memberComparison: CorporateMemberComparison;
   companies: CompanyCatalogImportCompany[];
   warnings: CompanyCatalogImportWarning[];
 }
@@ -280,11 +307,10 @@ export interface CompanyCatalogImportResult {
   synchronizedAt: string;
   operatorId: string;
   createdCompanyCount: number;
-  updatedCompanyCount: number;
-  preservedCompanyCount: number;
-  unseenCompanyCount: number;
+  ignoredExistingCompanyCount: number;
   registryEnrichedCount: number;
   registryUnavailableCount: number;
+  memberComparison: CorporateMemberComparison;
   preview: CompanyCatalogImportPreview;
 }
 
@@ -296,8 +322,7 @@ export interface CompanyCatalogImportSummary {
   analyzedRowCount: number;
   discoveredCompanyCount: number;
   createdCompanyCount: number;
-  updatedCompanyCount: number;
-  unseenCompanyCount: number;
+  ignoredExistingCompanyCount: number;
   warningCount: number;
 }
 
@@ -312,16 +337,23 @@ export interface CompanyFilters {
 }
 
 export interface SaveCompanyInput {
-  displayName: string;
+  displayName?: string | null;
   billingDay: number | null;
-  asaasSandboxCustomerId: string | null;
-  asaasProductionCustomerId: string | null;
   operatorId: string;
 }
 
 export interface CreateSandboxAsaasCustomerResponse {
   customer: AsaasCustomer;
   createdNow: boolean;
+}
+
+export interface CompanyAsaasSynchronization {
+  environment: AsaasEnvironment;
+  status: "Linked" | "NotFound" | "Ambiguous";
+  customerId: string | null;
+  customerName: string | null;
+  createdNow: boolean;
+  message: string;
 }
 
 const configuredApiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -437,8 +469,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ operatorId }),
     }),
+  synchronizeCatalogCompanyAsaasSandbox: (
+    taxId: string,
+    email: string,
+    operatorId: string,
+  ) =>
+    request<CompanyAsaasSynchronization>(
+      `/api/companies/${encodeURIComponent(taxId)}/asaas/sandbox-sync`,
+      {
+        method: "POST",
+        body: JSON.stringify({ email, operatorId }),
+      },
+    ),
+  synchronizeCatalogCompanyAsaasProduction: (taxId: string, operatorId: string) =>
+    request<CompanyAsaasSynchronization>(
+      `/api/companies/${encodeURIComponent(taxId)}/asaas/production-sync`,
+      {
+        method: "POST",
+        body: JSON.stringify({ operatorId }),
+      },
+    ),
   getCatalogCompanyMembers: (taxId: string) =>
-    request<CompanyMember[]>(`/api/companies/${encodeURIComponent(taxId)}/members`),
+    request<CorporateMember[]>(`/api/companies/${encodeURIComponent(taxId)}/members`),
+  getCorporateCatalogMembers: () =>
+    request<CorporateMember[]>("/api/corporate-members"),
   getCatalogCompanyBillingHistory: (taxId: string) =>
     request<CompanyBillingHistoryEntry[]>(`/api/companies/${encodeURIComponent(taxId)}/billing-history`),
   previewCompanyCatalogImport: (file: File) => {
@@ -449,10 +503,15 @@ export const api = {
       body: formData,
     });
   },
-  synchronizeCompanyCatalog: (file: File, operatorId: string) => {
+  synchronizeCompanyCatalog: (
+    file: File,
+    operatorId: string,
+    completeSnapshotConfirmed: boolean,
+  ) => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("operatorId", operatorId);
+    formData.append("completeSnapshotConfirmed", String(completeSnapshotConfirmed));
     return request<CompanyCatalogImportResult>("/api/company-catalog-imports", {
       method: "POST",
       body: formData,

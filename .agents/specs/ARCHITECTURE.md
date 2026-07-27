@@ -27,6 +27,11 @@ backend.
 `src/lib/api.ts` deve converter falhas HTTP em mensagens legíveis. Nunca exiba
 o corpo HTML de um 404/500 como conteúdo da tela.
 
+IDs de cliente Asaas nunca fazem parte de formulários. A tela exibe apenas o
+estado do vínculo e aciona endpoints de sincronização por CNPJ. Sandbox permite
+preparar um cliente espelho de teste; Produção oferece somente a ação de
+localizar um cliente já existente.
+
 ## Direção de interface
 
 Use o design aprovado como referência visual, sem importar funcionalidades que
@@ -35,8 +40,10 @@ Empresas, Cobranças e Integrações.
 
 As telas de empresa são `CompaniesPage` (lista), `CompanyDetailPage`
 (detalhe/edição), `CompanyFormPage` (cadastro manual) e
-`CompanyCatalogImportPage` (sincronização). Elas consomem exclusivamente
-`/api/companies` e `/api/company-catalog-imports`. Os componentes antigos que
+`CompanyCatalogImportPage` (inclusão opcional em lote e comparação do snapshot
+de colaboradores). A tela `CorporateMemberCrmPage` consome
+`/api/corporate-members`. Empresas usam `/api/companies` e a importação usa
+`/api/company-catalog-imports`. Os componentes antigos que
 derivavam empresas de vendas corporativas do EVO foram removidos; não
 reintroduzir uma lista de empresas calculada no browser.
 
