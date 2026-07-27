@@ -1070,7 +1070,7 @@ function SpreadsheetImportPage({
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5">
         <div>
           <p className="font-extrabold">Como exportar uma planilha válida no EVO</p>
-          <p className="mt-1 text-sm text-slate-500">Siga estes passos antes de escolher o arquivo.</p>
+          <p className="mt-1 text-sm text-slate-500">Use a tela de clientes que já está disponível no seu Portal EVO; os nomes dos menus podem variar por perfil.</p>
         </div>
         <span className="badge bg-orange/10 text-orange">Guia rápido</span>
       </summary>
@@ -1078,19 +1078,19 @@ function SpreadsheetImportPage({
         <ol className="space-y-4 text-sm leading-6 text-slate-600">
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">1</span>
-            <p>No Portal EVO, abra <strong className="text-slate-900">CRM 2.0 → Todos</strong> e mantenha o segmento <strong className="text-slate-900">Status de cliente: Ativos</strong>.</p>
+            <p>No Portal EVO, abra a <strong className="text-slate-900">lista de clientes</strong> usada pela equipe. Se a segmentação estiver disponível, mantenha <strong className="text-slate-900">Status de cliente: Ativos</strong>. Não há uma rota única de menu que funcione para todos os perfis.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">2</span>
-            <p>No seletor de colunas da tabela, marque <strong className="text-slate-900">IdCliente, Nome, IdContrato, Contrato, Profissão e Valor do contrato</strong>. “Profissão” é onde a exportação atual da Evoque traz a empresa seguida do CNPJ.</p>
+            <p>No ícone de <strong className="text-slate-900">colunas</strong> da tabela — o seletor com caixas de marcação e limite de 15 campos — pesquise e marque <strong className="text-slate-900">Nome, Profissão e Valor do contrato</strong>. Para atualizar o catálogo e os colaboradores, marque também <strong className="text-slate-900">IdCliente</strong>; <strong className="text-slate-900">IdContrato</strong> e <strong className="text-slate-900">Contrato</strong> são recomendados.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">3</span>
-            <p>Use o ícone de <strong className="text-slate-900">download</strong> no canto direito da tabela e exporte todos os resultados em <strong className="text-slate-900">XLSX</strong>, não apenas as linhas selecionadas.</p>
+            <p>Feche o seletor, confirme que as colunas aparecem na tabela e use o ícone de <strong className="text-slate-900">download</strong> no canto direito para exportar em <strong className="text-slate-900">XLSX</strong>. Não use o seletor de <strong className="text-slate-900">filtros</strong> para procurar “Empresa”: esse campo não existe ali.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">4</span>
-            <p>Envie o arquivo sem renomear as colunas. Clique em <strong className="text-slate-900">Conferir dados</strong>: essa ação só valida e agrupa os valores; ainda não cria boleto.</p>
+            <p>Envie o arquivo sem renomear as colunas. Clique em <strong className="text-slate-900">Conferir dados</strong>: essa ação só valida e agrupa os valores; ainda não cria boleto. Se a coluna “Profissão” não trouxer empresa e CNPJ, pare nesta etapa e envie uma amostra para ajustarmos o leitor.</p>
           </li>
         </ol>
         <div className="rounded-xl border border-slate-200 bg-white p-5">
@@ -1102,7 +1102,7 @@ function SpreadsheetImportPage({
           </div>
           <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
             <p className="font-extrabold">Importante</p>
-            <p className="mt-1">Não procure um filtro chamado “Empresa”: ele não existe nesse layout do EVO. O vínculo aceito pelo sistema deve aparecer em “Profissão” como <strong>Nome da empresa + CNPJ</strong>.</p>
+            <p className="mt-1">“Empresa” não é um filtro no layout atual. Para o faturamento, o sistema aceita <strong>Empresa</strong> ou <strong>Profissão</strong> como coluna, desde que o valor contenha <strong>nome da empresa + CNPJ</strong>.</p>
           </div>
           <p className="mt-4 text-xs leading-5 text-slate-500">O sistema lê a primeira aba do arquivo e ignora linhas sem CNPJ ou com valor igual a zero.</p>
         </div>
@@ -1334,7 +1334,7 @@ function CorporateMemberCrmPage({
   return <section>
     <PageHeading
       title="Colaboradores corporativos"
-      description="Base persistente comparada com a exportação completa de clientes ativos do CRM 2.0."
+      description="Base persistente comparada com a exportação completa de clientes ativos do EVO."
       action={<button className="button-primary" onClick={onImport}><FileSpreadsheet size={17} />Atualizar pelo EVO</button>}
     />
 
@@ -1395,7 +1395,7 @@ function CorporateMemberCrmPage({
                 <td className="px-5 py-4 text-slate-600">{date(member.lastSeenAt)}</td>
               </tr>
             ))}
-            {members.length === 0 && <EmptyTable colSpan={5} message="Importe uma exportação completa do CRM 2.0 para iniciar a base de colaboradores corporativos." />}
+          {members.length === 0 && <EmptyTable colSpan={5} message="Importe uma exportação completa de clientes ativos do EVO para iniciar a base de colaboradores corporativos." />}
           </tbody>
         </table>
       </div>
@@ -1795,7 +1795,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
 
   return <section className="max-w-[1040px] animate-[fade-in_180ms_ease-out]">
     <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
-    <PageHeading title="Atualizar empresas e colaboradores" description="Compare a exportação completa do CRM 2.0 com a base persistente antes de confirmar." />
+    <PageHeading title="Atualizar empresas e colaboradores" description="Compare a exportação completa de clientes ativos do EVO com a base persistente antes de confirmar." />
 
     <Callout tone="warning">
       Empresas já cadastradas não terão nome, dia de cobrança ou situação alterados. Os colaboradores serão comparados pelo IdCliente do EVO.
@@ -1806,7 +1806,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
     <div className="panel overflow-hidden">
       <div className="border-b border-slate-200 px-6 py-5">
         <p className="font-extrabold">Arquivo de origem</p>
-        <p className="mt-1 text-sm leading-6 text-slate-500">Selecione a exportação completa do CRM 2.0. O arquivo será analisado antes de qualquer cadastro.</p>
+        <p className="mt-1 text-sm leading-6 text-slate-500">Selecione a exportação completa de clientes ativos do EVO. O arquivo será analisado antes de qualquer cadastro.</p>
       </div>
       <label
         className={`group m-6 flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center outline-none transition ${
@@ -1931,7 +1931,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
               checked={completeSnapshotConfirmed}
               onChange={(event) => setCompleteSnapshotConfirmed(event.target.checked)}
             />
-            <span><strong>Confirmo que esta é a exportação completa de clientes ativos do CRM 2.0.</strong><br />Um arquivo filtrado ou parcial poderia marcar colaboradores ausentes como inativos.</span>
+            <span><strong>Confirmo que esta é a exportação completa de clientes ativos do EVO.</strong><br />Um arquivo filtrado ou parcial poderia marcar colaboradores ausentes como inativos.</span>
           </label>
           <div className="flex justify-end">
             <button className="button-primary shrink-0" disabled={isWorking || !completeSnapshotConfirmed || preview.memberComparison.conflictMemberCount > 0} onClick={() => void synchronize()}><CheckCircle2 size={17} />Atualizar base</button>
