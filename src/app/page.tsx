@@ -194,6 +194,7 @@ export default function BillingApplication() {
   const [companySearch, setCompanySearch] = useState("");
   const [companyFilter, setCompanyFilter] = useState<CompanyFilterKey>("all");
   const [catalogCompanies, setCatalogCompanies] = useState<Company[]>([]);
+  const [visibleCatalogCompanies, setVisibleCatalogCompanies] = useState<Company[]>([]);
   const [latestCatalogImport, setLatestCatalogImport] = useState<CompanyCatalogImportSummary | null>(null);
   const [selectedCompanyTaxId, setSelectedCompanyTaxId] = useState<string | null>(null);
   const [scheduleDay, setScheduleDay] = useState("20");
@@ -232,24 +233,36 @@ export default function BillingApplication() {
     setIsRefreshing(true);
     setErrorMessage(null);
     try {
-      const [status, memberData, corporateMemberData, scheduleData, periodData, catalogImport] = await Promise.all([
+      const [status, scheduleData, periodData, catalogImport] = await Promise.all([
         api.getIntegrationStatus(),
-        api.getMembers(),
-        api.getCorporateMembers(),
         api.getCompanySchedules(),
         api.getBillingPeriods(),
         api.getLatestCompanyCatalogImport(),
       ]);
       setLatestCatalogImport(catalogImport);
-      await refreshCatalogCompanies();
       setIntegrationStatus(status);
-      setMembers(memberData.members);
-      setCorporateMembers(corporateMemberData.corporateMembers);
-      setNextCorporateMemberOffset(corporateMemberData.offset + corporateMemberData.processedMemberMembershipCount);
-      setHasMoreCorporateMembers(corporateMemberData.processedMemberMembershipCount === corporateMemberData.limit);
       setSchedules(scheduleData);
       setBillingPeriods(periodData);
-      await refreshBillingData(selectedYear, selectedMonth);
+      await Promise.all([
+        refreshCatalogCompanies(),
+        refreshBillingData(selectedYear, selectedMonth),
+      ]);
+
+      // O catálogo interno não depende das consultas de diretório do EVO. Uma
+      // indisponibilidade do EVO deixa apenas Colaboradores sem atualização.
+      const [memberResult, corporateMemberResult] = await Promise.allSettled([
+        api.getMembers(),
+        api.getCorporateMembers(),
+      ]);
+      if (memberResult.status === "fulfilled") {
+        setMembers(memberResult.value.members);
+      }
+      if (corporateMemberResult.status === "fulfilled") {
+        const corporateMemberData = corporateMemberResult.value;
+        setCorporateMembers(corporateMemberData.corporateMembers);
+        setNextCorporateMemberOffset(corporateMemberData.offset + corporateMemberData.processedMemberMembershipCount);
+        setHasMoreCorporateMembers(corporateMemberData.processedMemberMembershipCount === corporateMemberData.limit);
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar a API.");
     } finally {
@@ -263,7 +276,13 @@ export default function BillingApplication() {
     filterKey: CompanyFilterKey = companyFilter,
     search: string = companySearch,
   ) {
-    setCatalogCompanies(await api.getCatalogCompanies(toCompanyFilters(filterKey, search)));
+    const filters = toCompanyFilters(filterKey, search);
+    const [allCompanies, filteredCompanies] = await Promise.all([
+      api.getCatalogCompanies(),
+      api.getCatalogCompanies(filters),
+    ]);
+    setCatalogCompanies(allCompanies);
+    setVisibleCatalogCompanies(filteredCompanies);
   }
 
   async function applyCompanyFilters(filterKey: CompanyFilterKey, search: string) {
@@ -508,7 +527,7 @@ export default function BillingApplication() {
             {page === "members" && <CompactEvoMembersPage members={visibleMembers} corporateMembers={visibleCorporateMembers} search={memberSearch} onSearchChange={setMemberSearch} />}
             {page === "companies" && (
               <CompaniesPage
-                companies={catalogCompanies}
+                companies={visibleCatalogCompanies}
                 filterKey={companyFilter}
                 latestImport={latestCatalogImport}
                 search={companySearch}
@@ -531,7 +550,6 @@ export default function BillingApplication() {
                   setNoticeMessage(message);
                   setLatestCatalogImport(await api.getLatestCompanyCatalogImport());
                   await refreshCatalogCompanies();
-                  setPage("companies");
                 }}
               />
             )}
@@ -1530,11 +1548,6 @@ function BatchCard({ batch, onApprove, onExecute }: { batch: ChargeBatch; onAppr
   const createdItems = batch.items.filter((item) => item.created).length;
   const failedItems = batch.items.filter((item) => item.status === "Failed").length;
   return <article className="panel p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-extrabold">Lote de {date(batch.dueDate)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{batch.items.length} prévia(s) · criado em {date(batch.createdAt)}</p></div><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></div><div className="mt-5 grid grid-cols-3 gap-2 text-center"><SmallMetric label="Itens" value={batch.items.length.toString()} /><SmallMetric label="Criadas" value={createdItems.toString()} /><SmallMetric label="Falhas" value={failedItems.toString()} /></div><div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && <button className="button-primary h-9" onClick={onExecute}>Executar</button>}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
-}
-
-function LegacyIntegrationsPage({ status }: { status: IntegrationStatus | null }) {
-  if (!status) return <div className="panel p-6 text-sm text-slate-500">Não foi possível obter o estado das integrações.</div>;
-  return <section><PageHeading title="Integrações" description="Estado atual das conexões utilizadas pelo faturamento." /><div className="grid gap-5 lg:grid-cols-2"><IntegrationCard icon={Database} title="Evo" description={status.evoMessage} configured={status.evoIsConfigured} label={status.evoIsConfigured ? "Conectado" : "Aguardando credenciais"} /><IntegrationCard icon={CreditCard} title="Asaas · Sandbox" description="Consulta de clientes e emissão segura de cobranças de teste." configured={status.sandbox.isConfigured} label={status.sandbox.chargeCreationEnabled ? "Criação habilitada" : "Somente consulta"} /><IntegrationCard icon={ShieldCheck} title="Asaas · Produção" description="A criação real fica bloqueada até credencial e habilitação explícita no servidor." configured={status.production.isConfigured && status.production.chargeCreationEnabled} label={status.production.isConfigured ? "Configuração incompleta" : "Não configurado"} /></div></section>;
 }
 
 function IntegrationCard({ icon: Icon, title, description, configured, label }: { icon: typeof Database; title: string; description: string; configured: boolean; label: string }) {
