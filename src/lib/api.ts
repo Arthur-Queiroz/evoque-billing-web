@@ -372,10 +372,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     requestHeaders.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(apiUrl(path), {
-    ...options,
-    headers: requestHeaders,
-  });
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), {
+      ...options,
+      headers: requestHeaders,
+    });
+  } catch {
+    throw new Error("Não foi possível conectar à API. Verifique sua conexão e tente novamente.");
+  }
 
   if (!response.ok) {
     const contentType = response.headers.get("content-type") ?? "";
@@ -384,9 +389,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       throw new Error(errorBody?.error ?? errorBody?.message ?? errorBody?.title ?? `A API respondeu com erro ${response.status}.`);
     }
 
-    throw new Error(
-      "Não foi possível consultar a API de faturamento. Confirme que o backend está em execução na porta 5207.",
-    );
+    throw new Error(`A API respondeu com erro ${response.status} ao consultar ${path}.`);
   }
 
   return response.json() as Promise<T>;
@@ -394,7 +397,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 /** Para endpoints que respondem `204 No Content` quando ainda não há dado. */
 async function requestOptional<T>(path: string): Promise<T | null> {
-  const response = await fetch(apiUrl(path), { headers: { Accept: "application/json" } });
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), { headers: { Accept: "application/json" } });
+  } catch {
+    throw new Error("Não foi possível conectar à API. Verifique sua conexão e tente novamente.");
+  }
   if (response.status === 204) {
     return null;
   }

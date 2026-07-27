@@ -214,7 +214,10 @@ export default function BillingApplication() {
   );
 
   const selectedEnvironmentStatus = environment === "Sandbox" ? integrationStatus?.sandbox : integrationStatus?.production;
-  const productionReady = integrationStatus?.production.isConfigured && integrationStatus.production.chargeCreationEnabled;
+  const productionAvailable = Boolean(
+    integrationStatus?.production.isConfigured
+    && integrationStatus.production.readOperationsEnabled,
+  );
   const activeCatalogCompanyCount = useMemo(
     () => catalogCompanies.filter((company) => company.isActive).length,
     [catalogCompanies],
@@ -238,27 +241,48 @@ export default function BillingApplication() {
     setIsRefreshing(true);
     setErrorMessage(null);
     try {
-      const [status, scheduleData, periodData, catalogImport] = await Promise.all([
+      const [statusResult, schedulesResult, periodsResult, catalogImportResult] = await Promise.allSettled([
         api.getIntegrationStatus(),
         api.getCompanySchedules(),
         api.getBillingPeriods(),
         api.getLatestCompanyCatalogImport(),
       ]);
-      setLatestCatalogImport(catalogImport);
-      setIntegrationStatus(status);
-      setSchedules(scheduleData);
-      setBillingPeriods(periodData);
-      await Promise.all([
+
+      if (statusResult.status === "fulfilled") setIntegrationStatus(statusResult.value);
+      if (schedulesResult.status === "fulfilled") setSchedules(schedulesResult.value);
+      if (periodsResult.status === "fulfilled") setBillingPeriods(periodsResult.value);
+      if (catalogImportResult.status === "fulfilled") setLatestCatalogImport(catalogImportResult.value);
+
+      const [catalogResult, billingResult, corporateMembersResult, membersResult] = await Promise.allSettled([
         refreshCatalogCompanies(),
         refreshBillingData(selectedYear, selectedMonth),
+        api.getCorporateCatalogMembers(),
+        api.getMembers(),
       ]);
-      setCorporateCatalogMembers(await api.getCorporateCatalogMembers());
 
-      // O catálogo interno não depende das consultas de diretório do EVO. Uma
-      // indisponibilidade do EVO deixa apenas Colaboradores sem atualização.
-      const [memberResult] = await Promise.allSettled([api.getMembers()]);
-      if (memberResult.status === "fulfilled") {
-        setMembers(memberResult.value.members);
+      if (corporateMembersResult.status === "fulfilled") {
+        setCorporateCatalogMembers(corporateMembersResult.value);
+      }
+      if (membersResult.status === "fulfilled") {
+        setMembers(membersResult.value.members);
+      }
+
+      const requiredFailures = [
+        statusResult,
+        schedulesResult,
+        periodsResult,
+        catalogResult,
+        billingResult,
+        corporateMembersResult,
+      ].filter((result) => result.status === "rejected");
+
+      if (requiredFailures.length > 0) {
+        const firstFailure = requiredFailures[0] as PromiseRejectedResult;
+        setErrorMessage(
+          firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : "Parte dos dados não pôde ser atualizada.",
+        );
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar a API.");
@@ -318,11 +342,14 @@ export default function BillingApplication() {
   }, [selectedMonth, selectedYear]);
 
   function selectEnvironment(targetEnvironment: AsaasEnvironment) {
-    if (targetEnvironment === "Production" && !productionReady) {
-      setNoticeMessage("Produção permanece bloqueada: a API ainda não recebeu uma credencial de produção com criação de cobranças habilitada.");
+    if (targetEnvironment === "Production" && !productionAvailable) {
+      setNoticeMessage("Produção ainda não está disponível para consulta. Verifique a credencial na tela de Integrações.");
       return;
     }
     setEnvironment(targetEnvironment);
+    if (targetEnvironment === "Production" && !integrationStatus?.production.chargeCreationEnabled) {
+      setNoticeMessage("Produção selecionada em modo de consulta. A emissão de cobranças reais permanece bloqueada.");
+    }
   }
 
   async function createOrRefreshSelectedPeriod() {
@@ -481,6 +508,12 @@ export default function BillingApplication() {
 
   async function executeBatch() {
     if (!confirmationBatch || confirmationText.trim() !== "CONFIRMAR") return;
+    if (!selectedEnvironmentStatus?.chargeCreationEnabled) {
+      setConfirmationBatch(null);
+      setConfirmationText("");
+      setErrorMessage(`A emissão de cobranças no ambiente ${environment} está bloqueada.`);
+      return;
+    }
     try {
       await api.executeChargeBatch(confirmationBatch.id, operatorId);
       setConfirmationBatch(null);
@@ -505,13 +538,18 @@ export default function BillingApplication() {
   return (
     <main className="min-h-screen bg-[#f5f6f8] text-slate-900">
       <div className="flex min-h-screen">
-        <Sidebar currentPage={page} environment={environment} onNavigate={setPage} />
+        <Sidebar
+          chargeCreationEnabled={selectedEnvironmentStatus?.chargeCreationEnabled ?? false}
+          currentPage={page}
+          environment={environment}
+          onNavigate={setPage}
+        />
         <div className="min-w-0 flex-1">
           <Header
             environment={environment}
             isRefreshing={isRefreshing}
             month={selectedMonth}
-            productionReady={Boolean(productionReady)}
+            productionAvailable={productionAvailable}
             year={selectedYear}
             onEnvironmentChange={selectEnvironment}
             onMonthChange={setSelectedMonth}
@@ -526,6 +564,13 @@ export default function BillingApplication() {
                 O ambiente {environment} não possui credenciais configuradas na API. A interface continuará em modo de consulta.
               </Callout>
             )}
+            {environment === "Production"
+              && selectedEnvironmentStatus?.readOperationsEnabled
+              && !selectedEnvironmentStatus.chargeCreationEnabled && (
+                <Callout tone="warning">
+                  Produção está disponível para consulta e sincronização. A emissão de cobranças reais continua bloqueada.
+                </Callout>
+              )}
 
             {page === "overview" && (
               <Overview
@@ -612,6 +657,7 @@ export default function BillingApplication() {
               <ChargesPage
                 batches={batches}
                 companies={catalogCompanies}
+                chargeCreationEnabled={selectedEnvironmentStatus?.chargeCreationEnabled ?? false}
                 drafts={drafts}
                 environment={environment}
                 hasPeriod={Boolean(selectedPeriod)}
@@ -650,7 +696,12 @@ export default function BillingApplication() {
   );
 }
 
-function Sidebar({ currentPage, environment, onNavigate }: { currentPage: Page; environment: AsaasEnvironment; onNavigate: (page: Page) => void }) {
+function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }: {
+  chargeCreationEnabled: boolean;
+  currentPage: Page;
+  environment: AsaasEnvironment;
+  onNavigate: (page: Page) => void;
+}) {
   const items: Array<{ page: Page; label: string; icon: typeof LayoutDashboard }> = [
     { page: "overview", label: "Visão geral", icon: LayoutDashboard },
     { page: "members", label: "Colaboradores", icon: UsersRound },
@@ -684,14 +735,20 @@ function Sidebar({ currentPage, environment, onNavigate }: { currentPage: Page; 
       </nav>
       <div className="mt-auto rounded-lg border border-amber-600/30 bg-amber-500/10 p-3">
         <p className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-amber-300"><span className="h-2 w-2 rounded-full bg-amber-300" />Asaas · {environment}</p>
-        <p className="mt-1 text-[11px] leading-4 text-zinc-400">{environment === "Sandbox" ? "Ambiente de testes — cobranças não são reais." : "Ambiente autorizado para cobranças reais."}</p>
+        <p className="mt-1 text-[11px] leading-4 text-zinc-400">
+          {environment === "Sandbox"
+            ? "Ambiente de testes — cobranças não são reais."
+            : chargeCreationEnabled
+              ? "Ambiente autorizado para cobranças reais."
+              : "Consulta de clientes reais — emissão bloqueada."}
+        </p>
       </div>
     </aside>
   );
 }
 
-function Header({ environment, isRefreshing, month, productionReady, year, onEnvironmentChange, onMonthChange, onRefresh, onYearChange }: {
-  environment: AsaasEnvironment; isRefreshing: boolean; month: number; productionReady: boolean; year: number;
+function Header({ environment, isRefreshing, month, productionAvailable, year, onEnvironmentChange, onMonthChange, onRefresh, onYearChange }: {
+  environment: AsaasEnvironment; isRefreshing: boolean; month: number; productionAvailable: boolean; year: number;
   onEnvironmentChange: (environment: AsaasEnvironment) => void; onMonthChange: (month: number) => void; onRefresh: () => void; onYearChange: (year: number) => void;
 }) {
   return (
@@ -706,7 +763,14 @@ function Header({ environment, isRefreshing, month, productionReady, year, onEnv
         </select>
         <div className="flex rounded-lg bg-slate-100 p-1 text-xs font-extrabold">
           <button className={`rounded-md px-3 py-2 transition ${environment === "Sandbox" ? "bg-white text-charcoal shadow-sm" : "text-slate-500"}`} onClick={() => onEnvironmentChange("Sandbox")}>Sandbox</button>
-          <button aria-disabled={!productionReady} className={`rounded-md px-3 py-2 transition ${environment === "Production" ? "bg-charcoal text-white shadow-sm" : "text-slate-500"} ${!productionReady ? "cursor-not-allowed opacity-55" : ""}`} onClick={() => onEnvironmentChange("Production")}>Produção</button>
+          <button
+            className={`rounded-md px-3 py-2 transition ${environment === "Production" ? "bg-charcoal text-white shadow-sm" : "text-slate-500"} ${!productionAvailable ? "cursor-not-allowed opacity-55" : ""}`}
+            disabled={!productionAvailable}
+            onClick={() => onEnvironmentChange("Production")}
+            title={productionAvailable ? "Consultar dados de produção" : "Produção ainda não está disponível para consulta"}
+          >
+            Produção
+          </button>
         </div>
         <button aria-label="Atualizar dados" className="flex h-10 w-10 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100" onClick={onRefresh}>
           <RefreshCw className={isRefreshing ? "animate-spin" : ""} size={18} />
@@ -980,6 +1044,49 @@ function SpreadsheetImportPage({
 
     {localError && <div className="mt-6"><Callout tone="error" onDismiss={() => setLocalError(null)}>{localError}</Callout></div>}
 
+    <details className="panel mt-6 overflow-hidden" open>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5">
+        <div>
+          <p className="font-extrabold">Como exportar uma planilha válida no EVO</p>
+          <p className="mt-1 text-sm text-slate-500">Siga estes passos antes de escolher o arquivo.</p>
+        </div>
+        <span className="badge bg-orange/10 text-orange">Guia rápido</span>
+      </summary>
+      <div className="grid gap-6 border-t border-slate-200 bg-slate-50/70 px-6 py-5 lg:grid-cols-[1.2fr_0.8fr]">
+        <ol className="space-y-4 text-sm leading-6 text-slate-600">
+          <li className="flex gap-3">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">1</span>
+            <p>No Portal EVO, abra <strong className="text-slate-900">CRM 2.0 → Todos</strong> e mantenha o segmento <strong className="text-slate-900">Status de cliente: Ativos</strong>.</p>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">2</span>
+            <p>No seletor de colunas da tabela, marque <strong className="text-slate-900">IdCliente, Nome, IdContrato, Contrato, Profissão e Valor do contrato</strong>. “Profissão” é onde a exportação atual da Evoque traz a empresa seguida do CNPJ.</p>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">3</span>
+            <p>Use o ícone de <strong className="text-slate-900">download</strong> no canto direito da tabela e exporte todos os resultados em <strong className="text-slate-900">XLSX</strong>, não apenas as linhas selecionadas.</p>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">4</span>
+            <p>Envie o arquivo sem renomear as colunas. Clique em <strong className="text-slate-900">Conferir dados</strong>: essa ação só valida e agrupa os valores; ainda não cria boleto.</p>
+          </li>
+        </ol>
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">O arquivo precisa conter</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {["Nome", "Profissão", "Valor do contrato"].map((column) => (
+              <span className="badge bg-slate-100 text-slate-700" key={column}>{column}</span>
+            ))}
+          </div>
+          <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
+            <p className="font-extrabold">Importante</p>
+            <p className="mt-1">Não procure um filtro chamado “Empresa”: ele não existe nesse layout do EVO. O vínculo aceito pelo sistema deve aparecer em “Profissão” como <strong>Nome da empresa + CNPJ</strong>.</p>
+          </div>
+          <p className="mt-4 text-xs leading-5 text-slate-500">O sistema lê a primeira aba do arquivo e ignora linhas sem CNPJ ou com valor igual a zero.</p>
+        </div>
+      </div>
+    </details>
+
     <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_330px]">
       <div className="space-y-5">
         <section className="panel p-6">
@@ -1047,8 +1154,8 @@ function ImportMetric({ label, value }: { label: string; value: string }) {
   return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
 }
 
-function ChargesPage({ batches, companies, drafts, environment, hasPeriod, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onExecute, onNavigate, onScheduleDayChange, onToggleDraft }: {
-  batches: ChargeBatch[]; companies: Company[]; drafts: BillingDraft[]; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
+function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, environment, hasPeriod, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onExecute, onNavigate, onScheduleDayChange, onToggleDraft }: {
+  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; drafts: BillingDraft[]; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
   onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onExecute: (batch: ChargeBatch) => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
 }) {
   const selectedDay = Number(scheduleDay);
@@ -1090,7 +1197,7 @@ function ChargesPage({ batches, companies, drafts, environment, hasPeriod, sched
         </div>
       </section>
 
-      <section className="mt-7"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-lg font-extrabold">Lotes do dia {String(selectedDay).padStart(2, "0")}</p><p className="mt-1 text-sm text-slate-500">Acompanhe revisão, aprovação e execução deste vencimento.</p></div></div><div className="mt-3 grid gap-3 lg:grid-cols-2">{batchesForSelectedDay.map((batch) => <BatchCard key={batch.id} batch={batch} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}{batchesForSelectedDay.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhuma prévia de lote foi criada para este dia nesta competência.</div>}</div></section>
+      <section className="mt-7"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-lg font-extrabold">Lotes do dia {String(selectedDay).padStart(2, "0")}</p><p className="mt-1 text-sm text-slate-500">Acompanhe revisão, aprovação e execução deste vencimento.</p></div></div><div className="mt-3 grid gap-3 lg:grid-cols-2">{batchesForSelectedDay.map((batch) => <BatchCard key={batch.id} batch={batch} chargeCreationEnabled={chargeCreationEnabled} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}{batchesForSelectedDay.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhuma prévia de lote foi criada para este dia nesta competência.</div>}</div></section>
 
       <details className="mt-7 rounded-xl border border-slate-200 bg-white" open>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 font-extrabold">
@@ -1827,10 +1934,15 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
   </section>;
 }
 
-function BatchCard({ batch, onApprove, onExecute }: { batch: ChargeBatch; onApprove: () => void; onExecute: () => void }) {
+function BatchCard({ batch, chargeCreationEnabled, onApprove, onExecute }: {
+  batch: ChargeBatch;
+  chargeCreationEnabled: boolean;
+  onApprove: () => void;
+  onExecute: () => void;
+}) {
   const createdItems = batch.items.filter((item) => item.created).length;
   const failedItems = batch.items.filter((item) => item.status === "Failed").length;
-  return <article className="panel p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-extrabold">Lote de {date(batch.dueDate)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{batch.items.length} prévia(s) · criado em {date(batch.createdAt)}</p></div><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></div><div className="mt-5 grid grid-cols-3 gap-2 text-center"><SmallMetric label="Itens" value={batch.items.length.toString()} /><SmallMetric label="Criadas" value={createdItems.toString()} /><SmallMetric label="Falhas" value={failedItems.toString()} /></div><div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && <button className="button-primary h-9" onClick={onExecute}>Executar</button>}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
+  return <article className="panel p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-extrabold">Lote de {date(batch.dueDate)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{batch.items.length} prévia(s) · criado em {date(batch.createdAt)}</p></div><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></div><div className="mt-5 grid grid-cols-3 gap-2 text-center"><SmallMetric label="Itens" value={batch.items.length.toString()} /><SmallMetric label="Criadas" value={createdItems.toString()} /><SmallMetric label="Falhas" value={failedItems.toString()} /></div><div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && (chargeCreationEnabled ? <button className="button-primary h-9" onClick={onExecute}>Executar</button> : <span className="text-xs font-bold text-amber-700">Emissão bloqueada</span>)}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
 }
 
 function IntegrationCard({ icon: Icon, title, description, configured, label }: { icon: typeof Database; title: string; description: string; configured: boolean; label: string }) {
@@ -1848,7 +1960,42 @@ function IntegrationsPage({ status, activeCatalogCompanyCount, latestImport, onO
 
   return <section>
     <PageHeading title="Integrações" description="Acompanhe as conexões e mantenha o catálogo de empresas pronto para o faturamento." />
-    <div className="grid gap-5 lg:grid-cols-2"><IntegrationCard icon={Database} title="Evo" description={status.evoMessage} configured={status.evoIsConfigured} label={status.evoIsConfigured ? "Conectado" : "Aguardando credenciais"} /><IntegrationCard icon={CreditCard} title="Asaas · Sandbox" description="Consulta de clientes e emissão segura de cobranças de teste." configured={status.sandbox.isConfigured} label={status.sandbox.chargeCreationEnabled ? "Criação habilitada" : "Somente consulta"} /><IntegrationCard icon={ShieldCheck} title="Asaas · Produção" description="A criação real fica bloqueada até credencial e habilitação explícita no servidor." configured={status.production.isConfigured && status.production.chargeCreationEnabled} label={status.production.isConfigured ? "Configuração incompleta" : "Não configurado"} /><IntegrationCard icon={Building2} title="Cadastro público de CNPJ" description="A BrasilAPI enriquece razão social, situação e endereço. O catálogo continua funcionando com o nome do EVO quando ela falha." configured label="Enriquecimento opcional" /></div>
+    <div className="grid gap-5 lg:grid-cols-2">
+      <IntegrationCard
+        icon={Database}
+        title="Evo"
+        description={status.evoMessage}
+        configured={status.evoIsConfigured}
+        label={status.evoIsConfigured ? "Conectado" : "Aguardando credenciais"}
+      />
+      <IntegrationCard
+        icon={CreditCard}
+        title="Asaas · Sandbox"
+        description="Consulta de clientes e emissão segura de cobranças de teste."
+        configured={status.sandbox.isConfigured && status.sandbox.readOperationsEnabled}
+        label={status.sandbox.chargeCreationEnabled ? "Criação de teste habilitada" : "Somente consulta"}
+      />
+      <IntegrationCard
+        icon={ShieldCheck}
+        title="Asaas · Produção"
+        description={status.production.chargeCreationEnabled
+          ? "Consultas e emissão de cobranças reais estão habilitadas."
+          : "Clientes reais podem ser consultados e sincronizados. A emissão de cobranças reais permanece bloqueada."}
+        configured={status.production.isConfigured && status.production.readOperationsEnabled}
+        label={status.production.chargeCreationEnabled
+          ? "Criação habilitada"
+          : status.production.readOperationsEnabled
+            ? "Consulta habilitada"
+            : "Não configurado"}
+      />
+      <IntegrationCard
+        icon={Building2}
+        title="Cadastro público de CNPJ"
+        description="A BrasilAPI enriquece razão social, situação e endereço. O catálogo continua funcionando com o nome do EVO quando ela falha."
+        configured
+        label="Enriquecimento opcional"
+      />
+    </div>
 
     <div className="panel mt-5 p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
