@@ -134,9 +134,19 @@ function fileSize(sizeInBytes: number): string {
   })} MB`;
 }
 
+const dateOnlyPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 function date(value: string | null | undefined): string {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(new Date(value));
+
+  // Um vencimento como "2026-08-20" é um dia de calendário, não um instante.
+  // new Date() o interpretaria como meia-noite UTC e o fuso do Brasil o
+  // exibiria como o dia anterior, mostrando 19/08 na confirmação da emissão.
+  const dateOnlyParts = dateOnlyPattern.exec(value);
+  const parsedDate = dateOnlyParts
+    ? new Date(Number(dateOnlyParts[1]), Number(dateOnlyParts[2]) - 1, Number(dateOnlyParts[3]))
+    : new Date(value);
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(parsedDate);
 }
 
 function monthLabel(year: number, month: number): string {
