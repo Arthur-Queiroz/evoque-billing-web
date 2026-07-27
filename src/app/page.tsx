@@ -1070,7 +1070,7 @@ function SpreadsheetImportPage({
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5">
         <div>
           <p className="font-extrabold">Como exportar uma planilha válida no EVO</p>
-          <p className="mt-1 text-sm text-slate-500">Use a tela de clientes que já está disponível no seu Portal EVO; os nomes dos menus podem variar por perfil.</p>
+          <p className="mt-1 text-sm text-slate-500">Exporte a segmentação completa de clientes ativos; ela representa o retrato atual usado no fechamento.</p>
         </div>
         <span className="badge bg-orange/10 text-orange">Guia rápido</span>
       </summary>
@@ -1078,19 +1078,19 @@ function SpreadsheetImportPage({
         <ol className="space-y-4 text-sm leading-6 text-slate-600">
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">1</span>
-            <p>No Portal EVO, abra a <strong className="text-slate-900">lista de clientes</strong> usada pela equipe. Se a segmentação estiver disponível, mantenha <strong className="text-slate-900">Status de cliente: Ativos</strong>. Não há uma rota única de menu que funcione para todos os perfis.</p>
+            <p>No menu lateral do Portal EVO, abra <strong className="text-slate-900">CRM 2.0 → Segmentação</strong>. Na listagem, mantenha somente o segmento <strong className="text-slate-900">Status de cliente: Ativos</strong>.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">2</span>
-            <p>No ícone de <strong className="text-slate-900">colunas</strong> da tabela — o seletor com caixas de marcação e limite de 15 campos — pesquise e marque <strong className="text-slate-900">Nome, Profissão e Valor do contrato</strong>. Para atualizar o catálogo e os colaboradores, marque também <strong className="text-slate-900">IdCliente</strong>; <strong className="text-slate-900">IdContrato</strong> e <strong className="text-slate-900">Contrato</strong> são recomendados.</p>
+            <p>Não adicione filtros de data. <strong className="text-slate-900">Data do cadastro</strong> é a entrada do cliente no EVO, não a competência do faturamento. O fechamento usa o retrato completo dos clientes ativos no momento da exportação.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">3</span>
-            <p>Feche o seletor, confirme que as colunas aparecem na tabela e use o ícone de <strong className="text-slate-900">download</strong> no canto direito para exportar em <strong className="text-slate-900">XLSX</strong>. Não use o seletor de <strong className="text-slate-900">filtros</strong> para procurar “Empresa”: esse campo não existe ali.</p>
+            <p>No ícone de <strong className="text-slate-900">colunas</strong> da tabela — as barras ao lado do download — marque <strong className="text-slate-900">Nome, Contrato, Profissão e Valor do contrato</strong>. O EVO acrescenta <strong className="text-slate-900">IdCliente</strong> e <strong className="text-slate-900">IdContrato</strong> automaticamente ao XLSX; eles não aparecem no seletor.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">4</span>
-            <p>Envie o arquivo sem renomear as colunas. Clique em <strong className="text-slate-900">Conferir dados</strong>: essa ação só valida e agrupa os valores; ainda não cria boleto. Se a coluna “Profissão” não trouxer empresa e CNPJ, pare nesta etapa e envie uma amostra para ajustarmos o leitor.</p>
+            <p>Aplique as colunas e use o ícone de <strong className="text-slate-900">download</strong> para exportar em <strong className="text-slate-900">XLSX</strong>. Envie o arquivo sem renomear as colunas e clique em <strong className="text-slate-900">Conferir dados</strong>; essa etapa ainda não cria boleto.</p>
           </li>
         </ol>
         <div className="rounded-xl border border-slate-200 bg-white p-5">
@@ -1102,7 +1102,7 @@ function SpreadsheetImportPage({
           </div>
           <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
             <p className="font-extrabold">Importante</p>
-            <p className="mt-1">“Empresa” não é um filtro no layout atual. Para o faturamento, o sistema aceita <strong>Empresa</strong> ou <strong>Profissão</strong> como coluna, desde que o valor contenha <strong>nome da empresa + CNPJ</strong>.</p>
+            <p className="mt-1">Não procure “Empresa”, “IdCliente” ou “IdContrato” em <strong>+ Filtro</strong>. Na exportação atual, o vínculo corporativo vem em <strong>Profissão</strong> como nome da empresa + CNPJ, enquanto os IDs são incluídos automaticamente.</p>
           </div>
           <p className="mt-4 text-xs leading-5 text-slate-500">O sistema lê a primeira aba do arquivo e ignora linhas sem CNPJ ou com valor igual a zero.</p>
         </div>
