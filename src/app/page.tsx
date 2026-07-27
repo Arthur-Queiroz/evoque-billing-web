@@ -2038,7 +2038,36 @@ function BatchCard({ batch, chargeCreationEnabled, onApprove, onExecute }: {
 }) {
   const createdItems = batch.items.filter((item) => item.created).length;
   const failedItems = batch.items.filter((item) => item.status === "Failed").length;
-  return <article className="panel p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-extrabold">Lote de {date(batch.dueDate)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{batch.items.length} prévia(s) · criado em {date(batch.createdAt)}</p></div><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></div><div className="mt-5 grid grid-cols-3 gap-2 text-center"><SmallMetric label="Itens" value={batch.items.length.toString()} /><SmallMetric label="Criadas" value={createdItems.toString()} /><SmallMetric label="Falhas" value={failedItems.toString()} /></div><div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && (chargeCreationEnabled ? <button className="button-primary h-9" onClick={onExecute}>Executar</button> : <span className="text-xs font-bold text-amber-700">Emissão bloqueada</span>)}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
+  // O boleto emitido precisa ser alcançável pelo portal. Sem isso, conferir a
+  // emissão depende de o e-mail do Asaas chegar, e uma falha de entrega vira
+  // uma emissão que ninguém consegue verificar.
+  const resolvedItems = batch.items.filter((item) => item.bankSlipUrl || item.error);
+  return <article className="panel p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-extrabold">Lote de {date(batch.dueDate)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{batch.items.length} prévia(s) · criado em {date(batch.createdAt)}</p></div><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></div><div className="mt-5 grid grid-cols-3 gap-2 text-center"><SmallMetric label="Itens" value={batch.items.length.toString()} /><SmallMetric label="Criadas" value={createdItems.toString()} /><SmallMetric label="Falhas" value={failedItems.toString()} /></div>
+    {resolvedItems.length > 0 && (
+      <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
+        <p className="text-xs font-extrabold uppercase tracking-wide text-slate-500">Cobranças emitidas</p>
+        {resolvedItems.map((item) => (
+          <div key={item.billingDraftId} className="rounded-lg bg-slate-50 p-3">
+            {item.bankSlipUrl ? (
+              <>
+                <a
+                  className="inline-flex items-center gap-1.5 text-sm font-extrabold text-orange hover:underline"
+                  href={item.bankSlipUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <FileText size={15} />Abrir boleto
+                </a>
+                {item.asaasPaymentId && <p className="mt-1 text-xs text-slate-500">{item.asaasPaymentId}</p>}
+              </>
+            ) : (
+              <p className="text-xs font-semibold text-red-700">{item.error}</p>
+            )}
+          </div>
+        ))}
+      </div>
+    )}
+    <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && (chargeCreationEnabled ? <button className="button-primary h-9" onClick={onExecute}>Executar</button> : <span className="text-xs font-bold text-amber-700">Emissão bloqueada</span>)}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
 }
 
 function IntegrationCard({ icon: Icon, title, description, configured, label }: { icon: typeof Database; title: string; description: string; configured: boolean; label: string }) {
