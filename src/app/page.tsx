@@ -145,6 +145,18 @@ function monthLabel(year: number, month: number): string {
     .replace(/^./, (letter) => letter.toUpperCase());
 }
 
+function competenceOptions(year: number, month: number): Array<{ label: string; value: string }> {
+  return [-1, 0, 1, 2].map((monthOffset) => {
+    const optionDate = new Date(year, month - 1 + monthOffset, 1);
+    const optionYear = optionDate.getFullYear();
+    const optionMonth = optionDate.getMonth() + 1;
+    return {
+      label: monthLabel(optionYear, optionMonth),
+      value: `${optionYear}-${optionMonth}`,
+    };
+  });
+}
+
 function statusBadge(status: string): string {
   const normalizedStatus = status.toLowerCase();
   if (normalizedStatus.includes("completed") || normalizedStatus.includes("approved") || normalizedStatus.includes("created")) {
@@ -655,10 +667,13 @@ export default function BillingApplication() {
             )}
             {page === "spreadsheetImport" && (
               <SpreadsheetImportPage
+                existingDrafts={drafts}
                 environment={environment}
                 hasPeriod={Boolean(selectedPeriod)}
+                onMonthChange={setSelectedMonth}
                 selectedMonth={selectedMonth}
                 selectedYear={selectedYear}
+                onYearChange={setSelectedYear}
                 onBack={() => setPage("charges")}
                 onImported={async (message) => {
                   setNoticeMessage(message);
@@ -778,10 +793,9 @@ function Header({ environment, isRefreshing, month, productionAvailable, year, o
       <p className="hidden text-sm font-extrabold sm:block">Evoque Cobranças</p>
       <div className="ml-auto flex items-center gap-2 sm:gap-3">
         <select aria-label="Competência" className="field hidden w-44 sm:block" value={`${year}-${month}`} onChange={(event) => { const [nextYear, nextMonth] = event.target.value.split("-").map(Number); onYearChange(nextYear); onMonthChange(nextMonth); }}>
-          {[-1, 0, 1, 2].map((yearOffset) => {
-            const optionDate = new Date(year, month - 1 + yearOffset, 1);
-            return <option key={optionDate.toISOString()} value={`${optionDate.getFullYear()}-${optionDate.getMonth() + 1}`}>{monthLabel(optionDate.getFullYear(), optionDate.getMonth() + 1)}</option>;
-          })}
+          {competenceOptions(year, month).map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
         </select>
         <div className="flex rounded-lg bg-slate-100 p-1 text-xs font-extrabold">
           <button className={`rounded-md px-3 py-2 transition ${environment === "Sandbox" ? "bg-white text-charcoal shadow-sm" : "text-slate-500"}`} onClick={() => onEnvironmentChange("Sandbox")}>Sandbox</button>
@@ -956,17 +970,23 @@ function ChargesHubPage({ batches, environment, onNavigate }: { batches: ChargeB
 }
 
 function SpreadsheetImportPage({
+  existingDrafts,
   environment,
   hasPeriod,
+  onMonthChange,
   selectedMonth,
   selectedYear,
+  onYearChange,
   onBack,
   onImported,
 }: {
+  existingDrafts: BillingDraft[];
   environment: AsaasEnvironment;
   hasPeriod: boolean;
+  onMonthChange: (month: number) => void;
   selectedMonth: number;
   selectedYear: number;
+  onYearChange: (year: number) => void;
   onBack: () => void;
   onImported: (message: string) => Promise<void>;
 }) {
@@ -976,6 +996,17 @@ function SpreadsheetImportPage({
   const [localError, setLocalError] = useState<string | null>(null);
   const [isReading, setIsReading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const previewCompany = preview?.companies.length === 1 ? preview.companies[0] : null;
+  const existingCompanyDraft = previewCompany
+    ? existingDrafts.find((draft) => draft.companyTaxId === previewCompany.companyTaxId) ?? null
+    : null;
+
+  function changeCompetence(value: string) {
+    const [nextYear, nextMonth] = value.split("-").map(Number);
+    onYearChange(nextYear);
+    onMonthChange(nextMonth);
+    setLocalError(null);
+  }
 
   async function readSpreadsheet() {
     if (!spreadsheetFile) {
@@ -1007,6 +1038,12 @@ function SpreadsheetImportPage({
     }
     if (!sandboxEmail.trim()) {
       setLocalError("Informe um e-mail controlado para receber a notificação do boleto de teste.");
+      return;
+    }
+    if (existingCompanyDraft) {
+      setLocalError(
+        `Já existe uma prévia de ${previewCompany?.companyName ?? "esta empresa"} em ${monthLabel(selectedYear, selectedMonth)}. Selecione outra competência.`,
+      );
       return;
     }
 
@@ -1053,6 +1090,7 @@ function SpreadsheetImportPage({
   const canCreateDrafts =
     preview !== null &&
     preview.companies.length === 1 &&
+    existingCompanyDraft === null &&
     environment === "Sandbox" &&
     sandboxEmail.trim().length > 0 &&
     !isImporting;
@@ -1070,7 +1108,7 @@ function SpreadsheetImportPage({
       <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-6 py-5">
         <div>
           <p className="font-extrabold">Como exportar uma planilha válida no EVO</p>
-          <p className="mt-1 text-sm text-slate-500">Exporte a segmentação completa de clientes ativos; ela representa o retrato atual usado no fechamento.</p>
+          <p className="mt-1 text-sm text-slate-500">Use a planilha financeira oficial do fechamento da empresa, não a exportação completa do cadastro.</p>
         </div>
         <span className="badge bg-orange/10 text-orange">Guia rápido</span>
       </summary>
@@ -1078,19 +1116,19 @@ function SpreadsheetImportPage({
         <ol className="space-y-4 text-sm leading-6 text-slate-600">
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">1</span>
-            <p>No menu lateral do Portal EVO, abra <strong className="text-slate-900">CRM 2.0 → Segmentação</strong>. Na listagem, mantenha somente o segmento <strong className="text-slate-900">Status de cliente: Ativos</strong>.</p>
+            <p>Escolha neste portal a <strong className="text-slate-900">competência da prévia</strong>. O mês selecionado será usado no vencimento do Asaas; não altere datas de cadastro ou contrato dentro do XLSX.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">2</span>
-            <p>Não adicione filtros de data. <strong className="text-slate-900">Data do cadastro</strong> é a entrada do cliente no EVO, não a competência do faturamento. O fechamento usa o retrato completo dos clientes ativos no momento da exportação.</p>
+            <p>Selecione a <strong className="text-slate-900">planilha oficial de fechamento de uma empresa</strong>. Ela deve representar os colaboradores e valores que a equipe realmente cobraria naquele fechamento.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">3</span>
-            <p>No ícone de <strong className="text-slate-900">colunas</strong> da tabela — as barras ao lado do download — marque <strong className="text-slate-900">Nome, Contrato, Profissão e Valor do contrato</strong>. O EVO acrescenta <strong className="text-slate-900">IdCliente</strong> e <strong className="text-slate-900">IdContrato</strong> automaticamente ao XLSX; eles não aparecem no seletor.</p>
+            <p>O arquivo precisa conter <strong className="text-slate-900">Nome</strong>, <strong className="text-slate-900">Empresa ou Profissão</strong> com nome e CNPJ, e <strong className="text-slate-900">Valor do contrato</strong>. Clique em <strong className="text-slate-900">Conferir dados</strong> e compare pessoas e total.</p>
           </li>
           <li className="flex gap-3">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-charcoal text-xs font-extrabold text-white">4</span>
-            <p>Aplique as colunas e use o ícone de <strong className="text-slate-900">download</strong> para exportar em <strong className="text-slate-900">XLSX</strong>. Envie o arquivo sem renomear as colunas e clique em <strong className="text-slate-900">Conferir dados</strong>; essa etapa ainda não cria boleto.</p>
+            <p>Só crie a prévia quando o resultado conferir com o fechamento manual. A prévia ainda <strong className="text-slate-900">não cria boleto</strong>; aprovação e execução acontecem depois.</p>
           </li>
         </ol>
         <div className="rounded-xl border border-slate-200 bg-white p-5">
@@ -1101,8 +1139,8 @@ function SpreadsheetImportPage({
             ))}
           </div>
           <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
-            <p className="font-extrabold">Importante</p>
-            <p className="mt-1">Não procure “Empresa”, “IdCliente” ou “IdContrato” em <strong>+ Filtro</strong>. Na exportação atual, o vínculo corporativo vem em <strong>Profissão</strong> como nome da empresa + CNPJ, enquanto os IDs são incluídos automaticamente.</p>
+            <p className="font-extrabold">Não use o catálogo como fechamento</p>
+            <p className="mt-1">A exportação completa do CRM 2.0 serve para atualizar empresas e colaboradores. Ela pode trazer contratos corporativos com valor zero e não deve gerar cobranças.</p>
           </div>
           <p className="mt-4 text-xs leading-5 text-slate-500">O sistema lê a primeira aba do arquivo e ignora linhas sem CNPJ ou com valor igual a zero.</p>
         </div>
@@ -1154,6 +1192,28 @@ function SpreadsheetImportPage({
         <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">2. Preparar prévia</p>
         <h2 className="mt-2 text-lg font-extrabold">Cliente de teste no Asaas</h2>
         <p className="mt-2 text-sm leading-6 text-slate-500">O e-mail abaixo será associado ao cliente Sandbox para receber notificações de teste. Nenhum cliente real será alterado.</p>
+        <label className="mt-5 block text-xs font-extrabold uppercase tracking-wide text-slate-500">Competência da prévia
+          <select
+            className="field mt-1.5 w-full bg-white text-sm font-bold normal-case tracking-normal text-slate-900"
+            value={`${selectedYear}-${selectedMonth}`}
+            onChange={(event) => changeCompetence(event.target.value)}
+          >
+            {competenceOptions(selectedYear, selectedMonth).map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <p className="mt-2 text-xs leading-5 text-slate-500">
+          Esta escolha define o mês do vencimento enviado ao Asaas e não altera as datas cadastrais da planilha.
+        </p>
+        {existingCompanyDraft && (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <p className="font-extrabold">Prévia já existente nesta competência</p>
+            <p className="mt-1 leading-5">
+              {previewCompany?.companyName} já possui uma prévia em {monthLabel(selectedYear, selectedMonth)}. Escolha outro mês para continuar.
+            </p>
+          </div>
+        )}
         <label className="mt-5 block text-xs font-extrabold uppercase tracking-wide text-slate-500">E-mail controlado
           <input className="field mt-1.5 w-full normal-case" placeholder="voce@exemplo.com" type="email" value={sandboxEmail} onChange={(event) => setSandboxEmail(event.target.value)} />
         </label>
@@ -1163,7 +1223,7 @@ function SpreadsheetImportPage({
         </div>
         <button className="button-primary mt-5 w-full" disabled={!canCreateDrafts} onClick={() => void createDrafts()}>
           {isImporting ? <LoaderCircle className="animate-spin" size={17} /> : <FileText size={17} />}
-          {isImporting ? "Preparando prévia..." : "Criar prévia Sandbox"}
+          {isImporting ? "Preparando prévia..." : `Criar prévia Sandbox · ${monthLabel(selectedYear, selectedMonth)}`}
         </button>
         {environment !== "Sandbox" && <p className="mt-3 text-xs leading-5 text-red-700">Volte ao ambiente Sandbox para validar este fluxo.</p>}
         {preview && preview.companies.length !== 1 && <p className="mt-3 text-xs leading-5 text-amber-700">Separe uma planilha por empresa para associar o cliente Asaas corretamente.</p>}
