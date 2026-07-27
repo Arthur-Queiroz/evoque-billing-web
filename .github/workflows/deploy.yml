@@ -38,11 +38,6 @@ jobs:
             ghcr.io/arthur-queiroz/evoque-billing-web:main
             ghcr.io/arthur-queiroz/evoque-billing-web:${{ github.sha }}
 
-      - name: Permitir pull público da imagem
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api --method PATCH /user/packages/container/evoque-billing-web -f visibility=public
-
       - name: Carregar chave de deploy
         uses: webfactory/ssh-agent@v0.9.1
         with:
@@ -72,8 +67,15 @@ jobs:
           EOF
 
       - name: Atualizar somente o client na VPS
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          test -n "$GHCR_TOKEN"
+          printf '%s' "$GHCR_TOKEN" |
+            ssh kvm2-evoque \
+              "docker login ghcr.io --username '$GHCR_USERNAME' --password-stdin"
           ssh kvm2-evoque '
             set -eu
             if [ ! -f /opt/evoque/current/infra/docker-compose.production.yml ]; then
