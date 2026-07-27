@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  ArrowLeft,
   Building2,
+  CalendarCheck2,
   CalendarDays,
   CheckCircle2,
   ChevronRight,
@@ -9,10 +11,12 @@ import {
   CircleDollarSign,
   CreditCard,
   Database,
+  FileSpreadsheet,
   FileText,
   LayoutDashboard,
   LoaderCircle,
   Plus,
+  ReceiptText,
   RefreshCw,
   Search,
   Settings2,
@@ -21,20 +25,99 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   api,
   AsaasEnvironment,
   BillingDraft,
   BillingPeriod,
   ChargeBatch,
+  Company,
+  CompanyBillingHistoryEntry,
+  CompanyCatalogImportPreview,
+  CompanyCatalogImportResult,
+  CompanyCatalogImportSummary,
+  CompanyFilters,
+  CompanyMember,
   CompanySchedule,
-  EvoCompany,
+  EvoCorporateMember,
   EvoMember,
+  EvoMembership,
   IntegrationStatus,
+  BillingSpreadsheetPreview,
 } from "@/lib/api";
 
-type Page = "overview" | "members" | "companies" | "charges" | "integrations";
+type Page =
+  | "overview"
+  | "members"
+  | "companies"
+  | "companyDetail"
+  | "companyForm"
+  | "companyCatalogImport"
+  | "charges"
+  | "spreadsheetImport"
+  | "dailyBilling"
+  | "integrations";
+
+/** Filtros oferecidos na tela de empresas, na ordem em que aparecem. */
+type CompanyFilterKey = "all" | "active" | "inactive" | "withoutBillingDay" | "withoutAsaas" | "unseen";
+
+const companyFilterOptions: Array<{ key: CompanyFilterKey; label: string }> = [
+  { key: "all", label: "Todas" },
+  { key: "active", label: "Ativas" },
+  { key: "inactive", label: "Inativas" },
+  { key: "withoutBillingDay", label: "Sem dia" },
+  { key: "withoutAsaas", label: "Sem Asaas" },
+  { key: "unseen", label: "Não vistas na última importação" },
+];
+
+function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyFilters {
+  const filters: CompanyFilters = {};
+  if (search.trim()) {
+    filters.search = search.trim();
+  }
+
+  if (filterKey === "active" || filterKey === "inactive") {
+    filters.status = filterKey;
+  } else if (filterKey === "withoutBillingDay") {
+    filters.withoutBillingDay = true;
+  } else if (filterKey === "withoutAsaas") {
+    filters.asaasLink = "pending";
+  } else if (filterKey === "unseen") {
+    filters.seenInLastImport = false;
+  }
+
+  return filters;
+}
+
+/** Campos editáveis de uma empresa, compartilhados por cadastro e edição. */
+interface CompanyFormValues {
+  displayName: string;
+  billingDay: number | null;
+  asaasSandboxCustomerId: string | null;
+  asaasProductionCustomerId: string | null;
+}
+
+function companySourceLabel(source: Company["source"]): string {
+  return source === "EvoSpreadsheet" ? "EVO" : "Manual";
+}
+
+function companyAsaasLabel(company: Company): string {
+  if (company.asaasProductionCustomerId) {
+    return "Produção configurado";
+  }
+  return company.asaasSandboxCustomerId ? "Sandbox configurado" : "Pendente";
+}
+
+function registryStatusLabel(company: Company): string {
+  const labels: Record<Company["registryLookupStatus"], string> = {
+    NotChecked: "Cadastro não consultado",
+    Found: company.registrationStatus ?? "Cadastro encontrado",
+    NotFound: "CNPJ não encontrado no cadastro público",
+    Unavailable: "Cadastro público indisponível na última consulta",
+  };
+  return labels[company.registryLookupStatus];
+}
 
 const operatorId = "operador-web";
 const billingDays = [2, 18, 20, 25];
@@ -76,6 +159,7 @@ function readableStatus(status: string): string {
     Completed: "Concluído",
     CompletedWithErrors: "Concluído com falhas",
     AwaitingReview: "Aguardando revisão",
+    PendingReview: "Aguardando revisão",
     ChargeCreated: "Cobrança criada",
     Draft: "Rascunho",
   };
@@ -94,18 +178,24 @@ export default function BillingApplication() {
   const [environment, setEnvironment] = useState<AsaasEnvironment>("Sandbox");
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
   const [members, setMembers] = useState<EvoMember[]>([]);
-  const [companies, setCompanies] = useState<EvoCompany[]>([]);
+  const [corporateMembers, setCorporateMembers] = useState<EvoCorporateMember[]>([]);
+  const [nextCorporateMemberOffset, setNextCorporateMemberOffset] = useState(0);
+  const [hasMoreCorporateMembers, setHasMoreCorporateMembers] = useState(false);
   const [schedules, setSchedules] = useState<CompanySchedule[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [drafts, setDrafts] = useState<BillingDraft[]>([]);
   const [batches, setBatches] = useState<ChargeBatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isCreatingPeriod, setIsCreatingPeriod] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
   const [memberSearch, setMemberSearch] = useState("");
   const [companySearch, setCompanySearch] = useState("");
-  const [scheduleCompanyId, setScheduleCompanyId] = useState("");
+  const [companyFilter, setCompanyFilter] = useState<CompanyFilterKey>("all");
+  const [catalogCompanies, setCatalogCompanies] = useState<Company[]>([]);
+  const [latestCatalogImport, setLatestCatalogImport] = useState<CompanyCatalogImportSummary | null>(null);
+  const [selectedCompanyTaxId, setSelectedCompanyTaxId] = useState<string | null>(null);
   const [scheduleDay, setScheduleDay] = useState("20");
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
@@ -118,32 +208,45 @@ export default function BillingApplication() {
 
   const selectedEnvironmentStatus = environment === "Sandbox" ? integrationStatus?.sandbox : integrationStatus?.production;
   const productionReady = integrationStatus?.production.isConfigured && integrationStatus.production.chargeCreationEnabled;
+  const activeCatalogCompanyCount = useMemo(
+    () => catalogCompanies.filter((company) => company.isActive).length,
+    [catalogCompanies],
+  );
+  const visibleCorporateMembers = useMemo(() => {
+    const normalizedSearch = memberSearch.trim().toLocaleLowerCase("pt-BR");
+    if (!normalizedSearch) return corporateMembers;
+    return corporateMembers.filter((member) => `${member.memberName} ${member.membershipName ?? ""} ${member.corporatePartnershipName}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
+  }, [corporateMembers, memberSearch]);
   const visibleMembers = useMemo(() => {
     const normalizedSearch = memberSearch.trim().toLocaleLowerCase("pt-BR");
     if (!normalizedSearch) return members;
     return members.filter((member) => `${member.firstName} ${member.lastName ?? ""} ${member.branchName}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
   }, [memberSearch, members]);
-  const visibleCompanies = useMemo(() => {
-    const normalizedSearch = companySearch.trim().toLocaleLowerCase("pt-BR");
-    if (!normalizedSearch) return companies;
-    return companies.filter((company) => `${company.corporateName} ${company.taxId ?? ""}`.toLocaleLowerCase("pt-BR").includes(normalizedSearch));
-  }, [companies, companySearch]);
+  const selectedCompany = useMemo(
+    () => catalogCompanies.find((company) => company.taxId === selectedCompanyTaxId) ?? null,
+    [catalogCompanies, selectedCompanyTaxId],
+  );
 
   async function refreshData(showLoading = false) {
     if (showLoading) setIsLoading(true);
     setIsRefreshing(true);
     setErrorMessage(null);
     try {
-      const [status, memberData, companyData, scheduleData, periodData] = await Promise.all([
+      const [status, memberData, corporateMemberData, scheduleData, periodData, catalogImport] = await Promise.all([
         api.getIntegrationStatus(),
         api.getMembers(),
-        api.getCompanies(),
+        api.getCorporateMembers(),
         api.getCompanySchedules(),
         api.getBillingPeriods(),
+        api.getLatestCompanyCatalogImport(),
       ]);
+      setLatestCatalogImport(catalogImport);
+      await refreshCatalogCompanies();
       setIntegrationStatus(status);
       setMembers(memberData.members);
-      setCompanies(companyData.companies);
+      setCorporateMembers(corporateMemberData.corporateMembers);
+      setNextCorporateMemberOffset(corporateMemberData.offset + corporateMemberData.processedMemberMembershipCount);
+      setHasMoreCorporateMembers(corporateMemberData.processedMemberMembershipCount === corporateMemberData.limit);
       setSchedules(scheduleData);
       setBillingPeriods(periodData);
       await refreshBillingData(selectedYear, selectedMonth);
@@ -151,6 +254,41 @@ export default function BillingApplication() {
       setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar a API.");
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }
+
+  /** Recarrega a lista sem recarregar a aplicação inteira. */
+  async function refreshCatalogCompanies(
+    filterKey: CompanyFilterKey = companyFilter,
+    search: string = companySearch,
+  ) {
+    setCatalogCompanies(await api.getCatalogCompanies(toCompanyFilters(filterKey, search)));
+  }
+
+  async function applyCompanyFilters(filterKey: CompanyFilterKey, search: string) {
+    setCompanyFilter(filterKey);
+    setCompanySearch(search);
+    try {
+      await refreshCatalogCompanies(filterKey, search);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar o catálogo de empresas.");
+    }
+  }
+
+  async function loadMoreCorporateMembers() {
+    if (!hasMoreCorporateMembers || isRefreshing) return;
+
+    setIsRefreshing(true);
+    setErrorMessage(null);
+    try {
+      const corporateMemberData = await api.getCorporateMembers(nextCorporateMemberOffset);
+      setCorporateMembers((currentMembers) => [...currentMembers, ...corporateMemberData.corporateMembers]);
+      setNextCorporateMemberOffset(corporateMemberData.offset + corporateMemberData.processedMemberMembershipCount);
+      setHasMoreCorporateMembers(corporateMemberData.processedMemberMembershipCount === corporateMemberData.limit);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível carregar mais vínculos corporativos do Evo.");
+    } finally {
       setIsRefreshing(false);
     }
   }
@@ -163,7 +301,7 @@ export default function BillingApplication() {
       setSelectedDraftIds((currentIds) => currentIds.filter((draftId) => draftData.some((draft) => draft.id === draftId)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Não foi possível carregar os faturamentos da competência.";
-      if (!message.includes("não foi encontrada")) setErrorMessage(message);
+      if (!message.includes("404") && !message.includes("não foi encontrada")) setErrorMessage(message);
       setDrafts([]);
       setBatches([]);
     }
@@ -188,6 +326,26 @@ export default function BillingApplication() {
     setEnvironment(targetEnvironment);
   }
 
+  async function createOrRefreshSelectedPeriod() {
+    if (isCreatingPeriod) return;
+
+    setIsCreatingPeriod(true);
+    try {
+      await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
+      setNoticeMessage(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Não foi possível iniciar o faturamento.";
+      if (message.includes("409")) {
+        setNoticeMessage(`O faturamento de ${monthLabel(selectedYear, selectedMonth)} já estava iniciado.`);
+      } else {
+        setErrorMessage(message);
+      }
+    } finally {
+      await refreshData();
+      setIsCreatingPeriod(false);
+    }
+  }
+
   async function createSelectedPeriod() {
     try {
       await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
@@ -198,19 +356,51 @@ export default function BillingApplication() {
     }
   }
 
-  async function saveSchedule(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!scheduleCompanyId.trim()) {
-      setErrorMessage("Informe o identificador externo da empresa no Evo.");
-      return;
-    }
+  async function saveCompany(taxId: string, input: CompanyFormValues) {
     try {
-      await api.saveCompanySchedule(scheduleCompanyId.trim(), Number(scheduleDay), operatorId);
-      setScheduleCompanyId("");
-      setNoticeMessage("Dia de cobrança salvo.");
-      setSchedules(await api.getCompanySchedules());
+      const savedCompany = await api.updateCatalogCompany(taxId, { ...input, operatorId });
+      setNoticeMessage(`Empresa ${savedCompany.displayName} salva.`);
+      await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível salvar o dia de cobrança.");
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível salvar a empresa.");
+    }
+  }
+
+  async function createCompany(taxId: string, input: CompanyFormValues) {
+    try {
+      const createdCompany = await api.createCatalogCompany(taxId, { ...input, operatorId });
+      setNoticeMessage(`Empresa ${createdCompany.displayName} cadastrada.`);
+      await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
+      setSelectedCompanyTaxId(createdCompany.taxId);
+      setPage("companyDetail");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível cadastrar a empresa.");
+    }
+  }
+
+  async function changeCompanyStatus(company: Company, activate: boolean) {
+    try {
+      const updatedCompany = activate
+        ? await api.reactivateCatalogCompany(company.taxId, operatorId)
+        : await api.deactivateCatalogCompany(company.taxId, operatorId);
+      setNoticeMessage(
+        activate
+          ? `Empresa ${updatedCompany.displayName} reativada.`
+          : `Empresa ${updatedCompany.displayName} inativada. O histórico e os lotes foram preservados.`,
+      );
+      await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível alterar a situação da empresa.");
+    }
+  }
+
+  async function refreshCompanyRegistry(company: Company) {
+    try {
+      const updatedCompany = await api.refreshCatalogCompanyRegistry(company.taxId, operatorId);
+      setNoticeMessage(`Dados cadastrais atualizados: ${registryStatusLabel(updatedCompany)}.`);
+      await refreshCatalogCompanies();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível atualizar os dados cadastrais.");
     }
   }
 
@@ -243,6 +433,16 @@ export default function BillingApplication() {
     }
   }
 
+  async function approveDraft(billingDraftId: string) {
+    try {
+      await api.approveBillingDraft(billingDraftId, operatorId);
+      setNoticeMessage("Prévia aprovada. Agora ela pode ser incluída em um lote Sandbox.");
+      await refreshBillingData(selectedYear, selectedMonth);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Não foi possível aprovar a prévia.");
+    }
+  }
+
   async function executeBatch() {
     if (!confirmationBatch || confirmationText.trim() !== "CONFIRMAR") return;
     try {
@@ -256,10 +456,9 @@ export default function BillingApplication() {
     }
   }
 
-  const currentSchedule = schedules.find((schedule) => schedule.externalCompanyId === scheduleCompanyId);
   const activeDrafts = drafts.filter((draft) => draft.status === "Approved");
   const totalMemberValue = members.reduce(
-    (total, member) => total + member.memberships.reduce((membershipTotal, membership) => membershipTotal + (membership.nextMonthValue ?? membership.nextChargeValue ?? 0), 0),
+    (total, member) => total + member.memberships.reduce((membershipTotal, membership) => membershipTotal + (membership.nextMonthValue ?? 0), 0),
     0,
   );
 
@@ -295,50 +494,102 @@ export default function BillingApplication() {
             {page === "overview" && (
               <Overview
                 activeDrafts={activeDrafts.length}
-                companies={companies.length}
+                activeCatalogCompanies={activeCatalogCompanyCount}
                 environment={environment}
                 memberValue={totalMemberValue}
                 members={members.length}
                 periodExists={Boolean(selectedPeriod)}
                 selectedYear={selectedYear}
                 selectedMonth={selectedMonth}
-                onCreatePeriod={() => void createSelectedPeriod()}
+                onCreatePeriod={() => void createOrRefreshSelectedPeriod()}
                 onNavigate={setPage}
               />
             )}
-            {page === "members" && <MembersPage members={visibleMembers} search={memberSearch} onSearchChange={setMemberSearch} />}
+            {page === "members" && <CompactEvoMembersPage members={visibleMembers} corporateMembers={visibleCorporateMembers} search={memberSearch} onSearchChange={setMemberSearch} />}
             {page === "companies" && (
               <CompaniesPage
-                companies={visibleCompanies}
-                currentSchedule={currentSchedule}
-                schedules={schedules}
-                scheduleCompanyId={scheduleCompanyId}
-                scheduleDay={scheduleDay}
+                companies={catalogCompanies}
+                filterKey={companyFilter}
+                latestImport={latestCatalogImport}
                 search={companySearch}
-                onScheduleCompanyIdChange={setScheduleCompanyId}
-                onScheduleDayChange={setScheduleDay}
-                onSearchChange={setCompanySearch}
-                onSubmitSchedule={saveSchedule}
+                onFiltersChange={(filterKey, search) => void applyCompanyFilters(filterKey, search)}
+                onImportCatalog={() => setPage("companyCatalogImport")}
+                onNewCompany={() => setPage("companyForm")}
+                onOpenCompany={(company) => { setSelectedCompanyTaxId(company.taxId); setPage("companyDetail"); }}
+              />
+            )}
+            {page === "companyForm" && (
+              <CompanyFormPage
+                onBack={() => setPage("companies")}
+                onCreate={(taxId, values) => void createCompany(taxId, values)}
+              />
+            )}
+            {page === "companyCatalogImport" && (
+              <CompanyCatalogImportPage
+                onBack={() => setPage("companies")}
+                onSynchronized={async (message) => {
+                  setNoticeMessage(message);
+                  setLatestCatalogImport(await api.getLatestCompanyCatalogImport());
+                  await refreshCatalogCompanies();
+                  setPage("companies");
+                }}
+              />
+            )}
+            {page === "companyDetail" && selectedCompany && (
+              <CompanyDetailPage
+                company={selectedCompany}
+                onBack={() => setPage("companies")}
+                onChangeStatus={(activate) => void changeCompanyStatus(selectedCompany, activate)}
+                onOpenCharges={() => setPage("dailyBilling")}
+                onRefreshRegistry={() => void refreshCompanyRegistry(selectedCompany)}
+                onSave={(values) => void saveCompany(selectedCompany.taxId, values)}
               />
             )}
             {page === "charges" && (
+              <ChargesHubPage
+                batches={batches}
+                environment={environment}
+                onNavigate={setPage}
+              />
+            )}
+            {page === "spreadsheetImport" && (
+              <SpreadsheetImportPage
+                environment={environment}
+                hasPeriod={Boolean(selectedPeriod)}
+                selectedMonth={selectedMonth}
+                selectedYear={selectedYear}
+                onBack={() => setPage("charges")}
+                onImported={async (message) => {
+                  setNoticeMessage(message);
+                  await refreshData();
+                  setPage("dailyBilling");
+                }}
+              />
+            )}
+            {page === "dailyBilling" && (
               <ChargesPage
                 batches={batches}
+                companies={catalogCompanies}
                 drafts={drafts}
                 environment={environment}
                 hasPeriod={Boolean(selectedPeriod)}
                 scheduleDay={scheduleDay}
+                selectedMonth={selectedMonth}
+                selectedYear={selectedYear}
+                schedules={schedules}
                 selectedDraftIds={selectedDraftIds}
-                totalDraftValue={getDraftTotal(activeDrafts)}
+                totalDraftValue={getDraftTotal(drafts.filter((draft) => selectedDraftIds.includes(draft.id)))}
                 onApprove={(batch) => void approveBatch(batch)}
-                onCreatePeriod={() => void createSelectedPeriod()}
+                onApproveDraft={(billingDraftId) => void approveDraft(billingDraftId)}
+                onCreatePeriod={() => void createOrRefreshSelectedPeriod()}
                 onCreatePreview={(scheduled) => void createBatchPreview(scheduled)}
                 onExecute={(batch) => setConfirmationBatch(batch)}
+                onNavigate={setPage}
                 onScheduleDayChange={setScheduleDay}
                 onToggleDraft={(draftId) => setSelectedDraftIds((currentIds) => currentIds.includes(draftId) ? currentIds.filter((id) => id !== draftId) : [...currentIds, draftId])}
               />
             )}
-            {page === "integrations" && <IntegrationsPage status={integrationStatus} />}
+            {page === "integrations" && <IntegrationsPage status={integrationStatus} activeCatalogCompanyCount={activeCatalogCompanyCount} latestImport={latestCatalogImport} onOpenCatalog={() => setPage("companies")} onImportCatalog={() => setPage("companyCatalogImport")} />}
           </div>
         </div>
       </div>
@@ -378,7 +629,9 @@ function Sidebar({ currentPage, environment, onNavigate }: { currentPage: Page; 
       <nav className="space-y-1">
         {items.map((item) => {
           const Icon = item.icon;
-          const isActive = currentPage === item.page;
+          const isActive = currentPage === item.page
+            || (item.page === "companies" && currentPage === "companyDetail")
+            || (item.page === "charges" && currentPage === "dailyBilling");
           return (
             <button key={item.page} className={`flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm font-bold transition ${isActive ? "bg-zinc-800 text-white" : "text-zinc-400 hover:bg-zinc-900 hover:text-white"}`} onClick={() => onNavigate(item.page)}>
               <Icon size={19} strokeWidth={1.8} />
@@ -422,17 +675,17 @@ function Header({ environment, isRefreshing, month, productionReady, year, onEnv
   );
 }
 
-function Overview({ activeDrafts, companies, environment, memberValue, members, periodExists, selectedYear, selectedMonth, onCreatePeriod, onNavigate }: {
-  activeDrafts: number; companies: number; environment: AsaasEnvironment; memberValue: number; members: number; periodExists: boolean; selectedYear: number; selectedMonth: number; onCreatePeriod: () => void; onNavigate: (page: Page) => void;
+function Overview({ activeDrafts, activeCatalogCompanies, environment, memberValue, members, periodExists, selectedYear, selectedMonth, onCreatePeriod, onNavigate }: {
+  activeDrafts: number; activeCatalogCompanies: number; environment: AsaasEnvironment; memberValue: number; members: number; periodExists: boolean; selectedYear: number; selectedMonth: number; onCreatePeriod: () => void; onNavigate: (page: Page) => void;
 }) {
   return <section className="animate-[fade-in_180ms_ease-out]">
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
       <div><p className="text-2xl font-extrabold tracking-tight">Visão geral</p><p className="mt-1 text-sm text-slate-500">Consulte dados do Evo e prepare cobranças no Asaas.</p></div>
-      {!periodExists && <button className="button-primary" onClick={onCreatePeriod}><Plus size={17} />Criar competência</button>}
+      {!periodExists && <button className="button-primary" onClick={onCreatePeriod}><Plus size={17} />Iniciar faturamento</button>}
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <MetricCard icon={UsersRound} label="Pessoas no Evo" value={members.toString()} />
-      <MetricCard icon={Building2} label="Empresas no Evo" value={companies.toString()} />
+      <MetricCard icon={Building2} label="Empresas ativas no catálogo" value={activeCatalogCompanies.toString()} />
       <MetricCard icon={FileText} label="Prévias aprovadas" value={activeDrafts.toString()} tone="amber" />
       <MetricCard icon={CircleDollarSign} label="Valor nas matrículas" value={money(memberValue)} tone="orange" />
     </div>
@@ -440,8 +693,8 @@ function Overview({ activeDrafts, companies, environment, memberValue, members, 
       <div className="panel p-5"><p className="text-base font-extrabold">O que você quer fazer?</p><p className="mt-1 text-sm text-slate-500">Fluxo seguro para a competência {monthLabel(selectedYear, selectedMonth)}.</p>
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
           <ActionCard icon={UsersRound} title="Colaboradores" description="Consultar matrículas e valores vindos do Evo." onClick={() => onNavigate("members")} />
-          <ActionCard icon={Building2} title="Configurar empresas" description="Definir dia de cobrança por empresa vinculada." onClick={() => onNavigate("companies")} />
-          <ActionCard dark icon={CalendarDays} title="Faturamento do dia" description="Criar uma prévia de lote para 02, 18, 20 ou 25." onClick={() => onNavigate("charges")} />
+          <ActionCard icon={Building2} title="Catálogo de empresas" description="Manter as empresas pagadoras e definir seus vencimentos." onClick={() => onNavigate("companies")} />
+          <ActionCard dark icon={CalendarDays} title="Faturamento do dia" description="Criar uma prévia de lote para 02, 18, 20 ou 25." onClick={() => onNavigate("dailyBilling")} />
         </div>
       </div>
       <div className="panel p-5"><div className="flex items-center justify-between"><p className="text-base font-extrabold">Ambiente atual</p><span className={`badge ${environment === "Sandbox" ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{environment}</span></div>
@@ -471,29 +724,806 @@ function MembersPage({ members, search, onSearchChange }: { members: EvoMember[]
   </section>;
 }
 
-function CompaniesPage({ companies, currentSchedule, schedules, scheduleCompanyId, scheduleDay, search, onScheduleCompanyIdChange, onScheduleDayChange, onSearchChange, onSubmitSchedule }: {
-  companies: EvoCompany[]; currentSchedule: CompanySchedule | undefined; schedules: CompanySchedule[]; scheduleCompanyId: string; scheduleDay: string; search: string;
-  onScheduleCompanyIdChange: (value: string) => void; onScheduleDayChange: (value: string) => void; onSearchChange: (value: string) => void; onSubmitSchedule: (event: FormEvent<HTMLFormElement>) => void;
+function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersChange, onImportCatalog, onNewCompany, onOpenCompany }: {
+  companies: Company[];
+  filterKey: CompanyFilterKey;
+  latestImport: CompanyCatalogImportSummary | null;
+  search: string;
+  onFiltersChange: (filterKey: CompanyFilterKey, search: string) => void;
+  onImportCatalog: () => void;
+  onNewCompany: () => void;
+  onOpenCompany: (company: Company) => void;
 }) {
-  return <section><PageHeading title="Empresas" description="Empresas devolvidas pelo módulo Partnership do Evo e seus dias de cobrança." />
-    <div className="grid gap-5 xl:grid-cols-[1fr_360px]"><div><div className="mb-4 flex max-w-md items-center gap-2"><Search className="absolute ml-3 text-slate-400" size={17} /><input className="field w-full pl-10" placeholder="Buscar empresa ou CNPJ" value={search} onChange={(event) => onSearchChange(event.target.value)} /></div>
-      <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[700px] w-full text-left text-sm"><thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Empresa</th><th className="px-5 py-3">CNPJ</th><th className="px-5 py-3">Dia</th><th className="px-5 py-3">Status</th></tr></thead><tbody>{companies.map((company) => { const companySchedule = schedules.find((schedule) => schedule.externalCompanyId === String(company.id)); return <tr key={company.id} className="border-b border-slate-100"><td className="px-5 py-4 font-bold">{company.corporateName}<p className="mt-0.5 text-xs font-medium text-slate-500">ID Evo {company.id}</p></td><td className="px-5 py-4 text-slate-600">{company.taxId ?? "Não informado"}</td><td className="px-5 py-4 font-extrabold">{companySchedule ? `Dia ${String(companySchedule.billingDay).padStart(2, "0")}` : "Não definido"}</td><td className="px-5 py-4"><span className={`badge ${company.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{company.isActive ? "Ativa" : "Inativa"}</span></td></tr>; })}{companies.length === 0 && <EmptyTable colSpan={4} message="O Evo não retornou empresas pelo endpoint Partnership. Cadastre o identificador externo apenas quando o vínculo estiver confirmado." />}</tbody></table></div></div></div>
-      <aside className="panel h-fit p-5"><div className="flex items-center gap-2"><CalendarDays size={19} className="text-orange" /><p className="font-extrabold">Dia de cobrança</p></div><p className="mt-2 text-sm leading-6 text-slate-500">A agenda é persistida no produto. Ela não altera nenhum dado no Evo.</p><form className="mt-5 space-y-3" onSubmit={onSubmitSchedule}><label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">ID externo da empresa<input className="field mt-1.5 w-full" placeholder="Ex.: ID da empresa no Evo" value={scheduleCompanyId} onChange={(event) => onScheduleCompanyIdChange(event.target.value)} /></label><label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia mensal<select className="field mt-1.5 w-full" value={scheduleDay} onChange={(event) => onScheduleDayChange(event.target.value)}>{billingDays.map((day) => <option key={day} value={day}>{String(day).padStart(2, "0")}</option>)}</select></label>{currentSchedule && <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">Agenda atual: dia {String(currentSchedule.billingDay).padStart(2, "0")}, atualizada em {date(currentSchedule.updatedAt)}.</p>}<button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar agenda</button></form></aside>
-    </div></section>;
+  const hasNoCatalogAtAll = companies.length === 0 && filterKey === "all" && !search.trim();
+
+  return <section className="animate-[fade-in_180ms_ease-out]">
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 className="text-2xl font-extrabold tracking-tight">Empresas</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          Catálogo interno de empresas pagadoras, identificado pelo CNPJ.
+          {latestImport ? ` Última sincronização em ${date(latestImport.synchronizedAt)}.` : " Nenhuma sincronização registrada."}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button className="button-secondary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Importar catálogo do EVO</button>
+        <button className="button-primary" onClick={onNewCompany}><Plus size={17} />Nova empresa</button>
+      </div>
+    </div>
+
+    {hasNoCatalogAtAll ? (
+      <div className="panel border-dashed px-6 py-12 text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-400"><Building2 size={24} /></div>
+        <p className="mt-4 font-extrabold">O catálogo de empresas está vazio</p>
+        <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Importe a exportação completa do CRM 2.0 do EVO para descobrir as empresas pelo CNPJ, ou cadastre uma empresa manualmente. Nenhuma empresa de exemplo é criada.</p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <button className="button-primary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Importar catálogo do EVO</button>
+          <button className="button-secondary" onClick={onNewCompany}><Plus size={17} />Nova empresa</button>
+        </div>
+      </div>
+    ) : <>
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="relative max-w-sm flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} />
+          <input className="field w-full pl-10" placeholder="Buscar por nome ou CNPJ" value={search} onChange={(event) => onFiltersChange(filterKey, event.target.value)} />
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {companyFilterOptions.map((option) => (
+            <button
+              key={option.key}
+              className={`rounded-full border px-3 py-1.5 text-xs font-extrabold transition ${option.key === filterKey ? "border-charcoal bg-charcoal text-white" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"}`}
+              onClick={() => onFiltersChange(option.key, search)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[980px] w-full text-left text-sm">
+        <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr>
+          <th className="px-5 py-3">Empresa</th>
+          <th className="px-5 py-3">CNPJ</th>
+          <th className="px-5 py-3">Pessoas</th>
+          <th className="px-5 py-3">Dia</th>
+          <th className="px-5 py-3">Asaas</th>
+          <th className="px-5 py-3">Origem</th>
+          <th className="px-5 py-3">Situação</th>
+          <th className="px-5 py-3"></th>
+        </tr></thead>
+        <tbody>
+          {companies.map((company) => (
+            <tr key={company.taxId} className="border-b border-slate-100 last:border-0">
+              <td className="px-5 py-4">
+                <p className="font-bold">{company.displayName}</p>
+                {company.evoName && company.evoName !== company.displayName && <p className="mt-0.5 text-xs text-slate-500">No EVO: {company.evoName}</p>}
+              </td>
+              <td className="px-5 py-4 text-slate-600">{company.formattedTaxId}</td>
+              <td className="px-5 py-4 text-slate-600">{company.memberCount}</td>
+              <td className="px-5 py-4 font-extrabold">{company.billingDay ? String(company.billingDay).padStart(2, "0") : "—"}</td>
+              <td className="px-5 py-4 text-slate-600">{companyAsaasLabel(company)}</td>
+              <td className="px-5 py-4 text-slate-600">{companySourceLabel(company.source)}</td>
+              <td className="px-5 py-4">
+                <span className={`badge ${company.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{company.isActive ? "Ativa" : "Inativa"}</span>
+                {company.requiresReviewAfterReappearing && <p className="mt-1 text-xs font-semibold text-amber-700">Reapareceu na planilha · conferir</p>}
+                {!company.seenInLastImport && latestImport && <p className="mt-1 text-xs text-slate-500">Não vista na última sincronização</p>}
+              </td>
+              <td className="px-5 py-4 text-right"><button className="button-secondary h-9" onClick={() => onOpenCompany(company)}>Abrir</button></td>
+            </tr>
+          ))}
+          {companies.length === 0 && <EmptyTable colSpan={8} message="Nenhuma empresa corresponde a esta busca ou filtro." />}
+        </tbody>
+      </table></div></div>
+    </>}
+  </section>;
 }
 
-function ChargesPage({ batches, drafts, environment, hasPeriod, scheduleDay, selectedDraftIds, totalDraftValue, onApprove, onCreatePeriod, onCreatePreview, onExecute, onScheduleDayChange, onToggleDraft }: {
-  batches: ChargeBatch[]; drafts: BillingDraft[]; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; selectedDraftIds: string[]; totalDraftValue: number;
-  onApprove: (batch: ChargeBatch) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onExecute: (batch: ChargeBatch) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
+function ChargesHubPage({ batches, environment, onNavigate }: { batches: ChargeBatch[]; environment: AsaasEnvironment; onNavigate: (page: Page) => void }) {
+  return <section className="max-w-[1020px] animate-[fade-in_180ms_ease-out]">
+    <PageHeading title="Cobranças" description={`Escolha como quer cobrar. Ambiente atual: ${environment}.`} />
+    <div className="grid gap-4 md:grid-cols-3">
+      <button className="rounded-xl bg-charcoal p-6 text-left text-white shadow-lg shadow-slate-900/10 transition hover:-translate-y-0.5 hover:bg-black" onClick={() => onNavigate("spreadsheetImport")}><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-800 text-orange"><FileSpreadsheet size={21} /></div><p className="mt-4 text-base font-extrabold">Importar fechamento do EVO</p><p className="mt-1 text-sm leading-6 text-zinc-400">Use a planilha exportada para conferir pessoas, empresa e valor antes de preparar a cobrança.</p></button>
+      <button className="panel p-6 text-left transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md" onClick={() => onNavigate("companies")}><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-800"><Building2 size={21} /></div><p className="mt-4 text-base font-extrabold">Nova cobrança por empresa</p><p className="mt-1 text-sm leading-6 text-slate-500">Escolha uma empresa e revise quais colaboradores entram na cobrança.</p></button>
+      <button className="panel p-6 text-left transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md" onClick={() => onNavigate("dailyBilling")}><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-orange/10 text-orange"><CalendarDays size={21} /></div><p className="mt-4 text-base font-extrabold">Faturamento do dia</p><p className="mt-1 text-sm leading-6 text-slate-500">Reúna as prévias aprovadas para os vencimentos 02, 18, 20 ou 25.</p></button>
+    </div>
+    <div className="mt-8"><p className="mb-3 text-sm font-extrabold">Cobranças e lotes criados</p>{batches.length === 0 ? <div className="panel border-dashed px-6 py-10 text-center"><p className="font-extrabold">Nenhuma cobrança criada ainda</p><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">Use um dos caminhos acima. As prévias e lotes aparecerão aqui com o resultado da execução.</p></div> : <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[760px] w-full text-left text-sm"><thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Lote</th><th className="px-5 py-3">Vencimento</th><th className="px-5 py-3">Ambiente</th><th className="px-5 py-3">Itens</th><th className="px-5 py-3">Status</th></tr></thead><tbody>{batches.map((batch) => <tr key={batch.id} className="border-b border-slate-100 last:border-0"><td className="px-5 py-4 font-bold">Lote de {date(batch.dueDate)}</td><td className="px-5 py-4 text-slate-600">{date(batch.dueDate)}</td><td className="px-5 py-4"><span className={`badge ${batch.asaasEnvironment === "Production" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"}`}>{batch.asaasEnvironment}</span></td><td className="px-5 py-4 text-slate-600">{batch.items.length}</td><td className="px-5 py-4"><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></td></tr>)}</tbody></table></div></div>}</div>
+  </section>;
+}
+
+function SpreadsheetImportPage({
+  environment,
+  hasPeriod,
+  selectedMonth,
+  selectedYear,
+  onBack,
+  onImported,
+}: {
+  environment: AsaasEnvironment;
+  hasPeriod: boolean;
+  selectedMonth: number;
+  selectedYear: number;
+  onBack: () => void;
+  onImported: (message: string) => Promise<void>;
 }) {
-  const approvedDrafts = drafts.filter((draft) => draft.status === "Approved");
-  return <section><PageHeading title="Cobranças" description="Prévia, aprovação e execução de cobranças por empresa ou por ciclo." />
-    {!hasPeriod ? <div className="panel p-8 text-center"><CalendarDays className="mx-auto text-slate-400" size={28} /><p className="mt-3 font-extrabold">Crie a competência antes de faturar</p><p className="mt-1 text-sm text-slate-500">As prévias e lotes são sempre vinculados a uma competência.</p><button className="button-primary mt-5" onClick={onCreatePeriod}>Criar competência</button></div> : <>
-      <div className="grid gap-5 xl:grid-cols-[1fr_360px]"><div className="panel overflow-hidden"><div className="flex items-center justify-between border-b border-slate-200 p-5"><div><p className="font-extrabold">Prévias aprovadas</p><p className="mt-1 text-sm text-slate-500">Selecione empresas para gerar um lote individual.</p></div><span className="text-sm font-extrabold">{selectedDraftIds.length} selecionada(s)</span></div><div className="overflow-x-auto"><table className="min-w-[720px] w-full text-left text-sm"><thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="w-12 px-5 py-3"></th><th className="px-5 py-3">Empresa</th><th className="px-5 py-3">Status</th><th className="px-5 py-3 text-right">Valor</th></tr></thead><tbody>{drafts.map((draft) => { const enabled = draft.status === "Approved"; return <tr key={draft.id} className="border-b border-slate-100 last:border-0"><td className="px-5 py-4"><input aria-label={`Selecionar ${draft.companyName}`} checked={selectedDraftIds.includes(draft.id)} disabled={!enabled} type="checkbox" onChange={() => onToggleDraft(draft.id)} /></td><td className="px-5 py-4"><p className="font-bold">{draft.companyName}</p><p className="mt-0.5 text-xs text-slate-500">{draft.companyTaxId}</p></td><td className="px-5 py-4"><span className={`badge ${statusBadge(draft.status)}`}>{readableStatus(draft.status)}</span></td><td className="px-5 py-4 text-right font-extrabold">{money(draft.totalAmount)}</td></tr>; })}{drafts.length === 0 && <EmptyTable colSpan={4} message="Ainda não há prévias nesta competência. Quando a integração Evo corporativa estiver concluída, elas serão geradas a partir das matrículas atuais." />}</tbody></table></div></div>
-        <aside className="panel h-fit p-5"><p className="font-extrabold">Preparar cobrança</p><p className="mt-1 text-sm leading-6 text-slate-500">Ambiente selecionado: <strong>{environment}</strong>.</p><label className="mt-5 block text-xs font-extrabold uppercase tracking-wide text-slate-500">Vencimento<select className="field mt-1.5 w-full" value={scheduleDay} onChange={(event) => onScheduleDayChange(event.target.value)}>{billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}</select></label><div className="mt-4 rounded-lg bg-slate-50 p-3"><p className="text-xs font-bold text-slate-500">Valor de prévias aprovadas</p><p className="mt-1 text-xl font-extrabold">{money(totalDraftValue)}</p></div><button className="button-primary mt-4 w-full" disabled={selectedDraftIds.length === 0} onClick={() => onCreatePreview(false)}><FileText size={17} />Criar prévia selecionada</button><button className="button-secondary mt-2 w-full" onClick={() => onCreatePreview(true)}><CalendarDays size={17} />Prévia do ciclo do dia</button><p className="mt-3 text-xs leading-5 text-slate-500">Criar prévia nunca envia cobranças ao Asaas.</p></aside>
+  const [spreadsheetFile, setSpreadsheetFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<BillingSpreadsheetPreview | null>(null);
+  const [sandboxEmail, setSandboxEmail] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [isReading, setIsReading] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+
+  async function readSpreadsheet() {
+    if (!spreadsheetFile) {
+      setLocalError("Selecione uma planilha XLSX exportada do EVO.");
+      return;
+    }
+
+    setIsReading(true);
+    setLocalError(null);
+    try {
+      setPreview(await api.previewBillingSpreadsheet(selectedYear, selectedMonth, spreadsheetFile));
+    } catch (error) {
+      setPreview(null);
+      setLocalError(error instanceof Error ? error.message : "Não foi possível ler a planilha.");
+    } finally {
+      setIsReading(false);
+    }
+  }
+
+  async function createDrafts() {
+    if (!spreadsheetFile || !preview) return;
+    if (environment !== "Sandbox") {
+      setLocalError("A importação de teste está disponível somente no ambiente Sandbox.");
+      return;
+    }
+    if (preview.companies.length !== 1) {
+      setLocalError("Para este primeiro fluxo, importe uma planilha com exatamente uma empresa por vez.");
+      return;
+    }
+    if (!sandboxEmail.trim()) {
+      setLocalError("Informe um e-mail controlado para receber a notificação do boleto de teste.");
+      return;
+    }
+
+    setIsImporting(true);
+    setLocalError(null);
+    try {
+      if (!hasPeriod) {
+        try {
+          await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (!message.includes("409") && !message.toLocaleLowerCase("pt-BR").includes("já")) {
+            throw error;
+          }
+        }
+      }
+
+      const company = preview.companies[0];
+      const customerResult = await api.createSandboxAsaasCustomer(
+        company.companyName,
+        company.companyTaxId,
+        sandboxEmail.trim(),
+      );
+      const importResult = await api.createBillingDraftsFromSpreadsheet(
+        selectedYear,
+        selectedMonth,
+        spreadsheetFile,
+        operatorId,
+        customerResult.customer.id,
+      );
+      await onImported(
+        `${importResult.billingDrafts.length} prévia(s) criada(s) a partir da planilha. Revise e aprove antes de gerar o lote Sandbox.`,
+      );
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "Não foi possível criar as prévias da planilha.");
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  const canCreateDrafts =
+    preview !== null &&
+    preview.companies.length === 1 &&
+    environment === "Sandbox" &&
+    sandboxEmail.trim().length > 0 &&
+    !isImporting;
+
+  return <section className="max-w-[1080px] animate-[fade-in_180ms_ease-out]">
+    <button className="mb-6 inline-flex items-center gap-1 text-sm font-bold text-slate-500 transition hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Cobranças</button>
+    <div className="flex flex-col gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
+      <div><p className="text-xs font-extrabold uppercase tracking-[0.16em] text-orange">Fonte do fechamento</p><h1 className="mt-2 text-3xl font-extrabold tracking-tight">Importar planilha do EVO</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Confira o agrupamento e o total da planilha antes de criar uma prévia. Esta etapa não gera boleto.</p></div>
+      <span className="badge border border-amber-200 bg-amber-50 text-amber-800">Asaas · {environment}</span>
+    </div>
+
+    {localError && <div className="mt-6"><Callout tone="error" onDismiss={() => setLocalError(null)}>{localError}</Callout></div>}
+
+    <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_330px]">
+      <div className="space-y-5">
+        <section className="panel p-6">
+          <div className="flex items-start gap-3"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-orange/10 text-orange"><FileSpreadsheet size={22} /></div><div><h2 className="font-extrabold">1. Escolha o fechamento</h2><p className="mt-1 text-sm leading-6 text-slate-500">Arquivo XLSX exportado do EVO, com nome, empresa, CNPJ e valor do contrato.</p></div></div>
+          <label className="mt-5 block rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 transition focus-within:border-orange focus-within:ring-2 focus-within:ring-orange/20">
+            <span className="block text-sm font-extrabold">{spreadsheetFile?.name ?? "Selecionar planilha XLSX"}</span>
+            <span className="mt-1 block text-xs text-slate-500">{spreadsheetFile ? `${(spreadsheetFile.size / 1024 / 1024).toFixed(1)} MB` : "Máximo de 25 MB"}</span>
+            <input
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="mt-4 block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:text-sm file:font-bold file:text-slate-800 file:shadow-sm"
+              type="file"
+              onChange={(event) => {
+                setSpreadsheetFile(event.target.files?.[0] ?? null);
+                setPreview(null);
+                setLocalError(null);
+              }}
+            />
+          </label>
+          <button className="button-secondary mt-4" disabled={!spreadsheetFile || isReading} onClick={() => void readSpreadsheet()}>
+            {isReading ? <LoaderCircle className="animate-spin" size={17} /> : <Search size={17} />}
+            {isReading ? "Lendo planilha..." : "Conferir dados"}
+          </button>
+        </section>
+
+        {preview && <section className="panel overflow-hidden">
+          <div className="border-b border-slate-200 bg-slate-50 px-6 py-5"><p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">Resultado da leitura</p><div className="mt-2 flex flex-wrap items-end justify-between gap-3"><h2 className="text-xl font-extrabold">{preview.fileName}</h2><p className="text-2xl font-extrabold">{money(preview.totalAmount)}</p></div></div>
+          <div className="grid grid-cols-2 gap-px border-b border-slate-200 bg-slate-200 sm:grid-cols-4">
+            <ImportMetric label="Empresas" value={String(preview.companies.length)} />
+            <ImportMetric label="Pessoas" value={String(preview.importedRowCount)} />
+            <ImportMetric label="Duplicadas ignoradas" value={String(preview.duplicateRowCount)} />
+            <ImportMetric label="Avisos" value={String(preview.warnings.length)} />
+          </div>
+          <div className="divide-y divide-slate-100">
+            {preview.companies.map((company) => <div className="px-6 py-5" key={company.companyTaxId}>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-extrabold">{company.companyName}</p><p className="mt-1 text-xs text-slate-500">CNPJ {company.companyTaxId} · {company.memberCount} pessoa(s)</p></div><p className="font-extrabold">{money(company.totalAmount)}</p></div>
+            </div>)}
+          </div>
+          {preview.warnings.length > 0 && <div className="border-t border-amber-200 bg-amber-50 px-6 py-4"><p className="text-sm font-extrabold text-amber-900">Linhas que precisam de atenção</p><ul className="mt-2 space-y-1 text-xs leading-5 text-amber-800">{preview.warnings.slice(0, 5).map((warning, index) => <li key={`${warning.code}-${warning.sourceRowNumber ?? index}`}>{warning.sourceRowNumber ? `Linha ${warning.sourceRowNumber}: ` : ""}{warning.message}</li>)}</ul></div>}
+        </section>}
       </div>
-      <div className="mt-7"><div className="mb-3 flex items-center justify-between"><div><p className="text-lg font-extrabold">Lotes da competência</p><p className="mt-1 text-sm text-slate-500">Acompanhe cada aprovação e execução.</p></div></div><div className="grid gap-3 lg:grid-cols-2">{batches.map((batch) => <BatchCard key={batch.id} batch={batch} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}{batches.length === 0 && <div className="panel p-8 text-center text-sm text-slate-500">Nenhum lote criado nesta competência.</div>}</div></div>
-    </>}</section>;
+
+      <aside className="panel h-fit p-6 lg:sticky lg:top-24">
+        <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">2. Preparar prévia</p>
+        <h2 className="mt-2 text-lg font-extrabold">Cliente de teste no Asaas</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-500">O e-mail abaixo será associado ao cliente Sandbox para receber notificações de teste. Nenhum cliente real será alterado.</p>
+        <label className="mt-5 block text-xs font-extrabold uppercase tracking-wide text-slate-500">E-mail controlado
+          <input className="field mt-1.5 w-full normal-case" placeholder="voce@exemplo.com" type="email" value={sandboxEmail} onChange={(event) => setSandboxEmail(event.target.value)} />
+        </label>
+        <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+          <p className="font-extrabold text-slate-800">O que acontecerá</p>
+          <p className="mt-1">O sistema localizará ou criará o cliente no Sandbox e salvará uma prévia para revisão.</p>
+        </div>
+        <button className="button-primary mt-5 w-full" disabled={!canCreateDrafts} onClick={() => void createDrafts()}>
+          {isImporting ? <LoaderCircle className="animate-spin" size={17} /> : <FileText size={17} />}
+          {isImporting ? "Preparando prévia..." : "Criar prévia Sandbox"}
+        </button>
+        {environment !== "Sandbox" && <p className="mt-3 text-xs leading-5 text-red-700">Volte ao ambiente Sandbox para validar este fluxo.</p>}
+        {preview && preview.companies.length !== 1 && <p className="mt-3 text-xs leading-5 text-amber-700">Separe uma planilha por empresa para associar o cliente Asaas corretamente.</p>}
+      </aside>
+    </div>
+  </section>;
+}
+
+function ImportMetric({ label, value }: { label: string; value: string }) {
+  return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
+}
+
+function ChargesPage({ batches, companies, drafts, environment, hasPeriod, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onExecute, onNavigate, onScheduleDayChange, onToggleDraft }: {
+  batches: ChargeBatch[]; companies: Company[]; drafts: BillingDraft[]; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
+  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onExecute: (batch: ChargeBatch) => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
+}) {
+  const selectedDay = Number(scheduleDay);
+  const activeSchedulesForDay = schedules.filter((schedule) => schedule.isActive && schedule.billingDay === selectedDay);
+  const batchesForSelectedDay = batches.filter((batch) => Number(batch.dueDate.slice(8, 10)) === selectedDay);
+  // A agenda guarda o CNPJ normalizado, que é a identidade da empresa no
+  // catálogo. Empresas inativas não entram no lote e não são listadas aqui.
+  const companiesForSelectedDay = activeSchedulesForDay
+    .map((schedule) => companies.find((company) => company.taxId === schedule.externalCompanyId))
+    .filter((company): company is Company => company !== undefined && company.isActive);
+
+  return <section>
+    <button className="mb-6 inline-flex items-center gap-1 text-sm font-bold text-slate-500 transition hover:text-slate-900" onClick={() => onNavigate("charges")}><ArrowLeft size={16} />Cobranças</button>
+    <div className="flex flex-col gap-3 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
+      <div><p className="text-xs font-extrabold uppercase tracking-[0.16em] text-orange">Ciclo mensal</p><h1 className="mt-2 text-3xl font-extrabold tracking-tight text-slate-950">Faturamento do dia</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Selecione uma data para revisar as empresas configuradas e gerar uma prévia segura do lote.</p></div>
+      <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-extrabold ${environment === "Sandbox" ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-800"}`}><span className="h-2 w-2 rounded-full bg-current" />Asaas · {environment}</div>
+    </div>
+
+    <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {billingDays.map((day) => {
+        const companiesOnDay = schedules.filter((schedule) => schedule.isActive && schedule.billingDay === day).length;
+        const isSelected = day === selectedDay;
+        return <button key={day} className={`group rounded-xl border p-5 text-left transition focus:outline-none focus:ring-2 focus:ring-orange/30 ${isSelected ? "border-charcoal bg-charcoal text-white shadow-lg shadow-slate-900/10" : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-orange/50 hover:shadow-md"}`} onClick={() => onScheduleDayChange(String(day))}>
+          <div className="flex items-start justify-between"><span className={`text-xs font-extrabold uppercase tracking-[0.16em] ${isSelected ? "text-orange-200" : "text-slate-500"}`}>Dia</span>{isSelected && <CalendarCheck2 size={19} className="text-orange" />}</div>
+          <p className="mt-3 text-4xl font-extrabold tracking-tight">{String(day).padStart(2, "0")}</p>
+          <p className={`mt-3 text-sm font-semibold ${isSelected ? "text-slate-300" : "text-slate-500"}`}>{companiesOnDay} {companiesOnDay === 1 ? "empresa configurada" : "empresas configuradas"}</p>
+        </button>;
+      })}
+    </div>
+
+    {!hasPeriod ? <div className="panel mt-7 flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-extrabold">O faturamento deste mês ainda não foi iniciado</p><p className="mt-1 text-sm text-slate-500">Inicie o faturamento para preparar prévias e lotes. Nenhuma cobrança será criada no Asaas nesta etapa.</p></div><button className="button-primary shrink-0" onClick={onCreatePeriod}><Plus size={17} />Iniciar faturamento de {monthLabel(selectedYear, selectedMonth)}</button></div> : <>
+      <section className="mt-7 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 bg-slate-50/70 px-6 py-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange/10 text-orange"><CalendarDays size={21} /></div><div><p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">Vencimento selecionado</p><h2 className="mt-0.5 text-xl font-extrabold">Dia {String(selectedDay).padStart(2, "0")}</h2></div></div><p className="text-sm text-slate-500">{companiesForSelectedDay.length} empresa(s) ativa(s) na agenda</p></div></div>
+        <div className="grid gap-5 p-6 xl:grid-cols-[1fr_330px]">
+          <div>
+            {companiesForSelectedDay.length === 0 ? <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center"><Building2 className="mx-auto text-slate-400" size={26} /><p className="mt-3 font-extrabold">Nenhuma empresa ativa está pronta para este dia</p><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">Abra o catálogo de empresas e defina o dia de cobrança de uma empresa ativa antes de gerar uma prévia.</p><button className="button-secondary mt-5" onClick={() => onNavigate("companies")}>Abrir catálogo de empresas</button></div> : <><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="font-extrabold">Empresas do ciclo</p><p className="mt-1 text-sm text-slate-500">A lista usa o catálogo interno e os vencimentos salvos no faturamento.</p></div><span className="badge bg-slate-100 text-slate-700">{companiesForSelectedDay.length} empresa(s) ativa(s)</span></div><div className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">{companiesForSelectedDay.map((company) => <div key={company.taxId} className="flex items-center justify-between gap-4 px-4 py-3.5"><div><p className="font-bold">{company.displayName}</p><p className="mt-0.5 text-xs text-slate-500">{company.formattedTaxId} · {companyAsaasLabel(company)}</p></div><span className="text-xs font-extrabold text-slate-500">Dia {String(company.billingDay ?? selectedDay).padStart(2, "0")}</span></div>)}</div></>}
+          </div>
+          <aside className="rounded-xl border border-slate-200 bg-slate-50 p-5"><div className="flex items-center gap-2"><ReceiptText size={18} className="text-orange" /><p className="font-extrabold">Gerar prévia do ciclo</p></div><p className="mt-2 text-sm leading-6 text-slate-500">A prévia calcula o lote e não cria cobranças no Asaas.</p><div className="mt-5 rounded-lg border border-slate-200 bg-white p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Ambiente</p><p className="mt-1 font-extrabold">{environment}</p></div><button className="button-primary mt-4 w-full" disabled={companiesForSelectedDay.length === 0} onClick={() => onCreatePreview(true)}><FileText size={17} />Gerar prévia do dia {String(selectedDay).padStart(2, "0")}</button><p className="mt-3 text-xs leading-5 text-slate-500">Após criar, revise e aprove o lote antes de qualquer emissão.</p></aside>
+        </div>
+      </section>
+
+      <section className="mt-7"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-lg font-extrabold">Lotes do dia {String(selectedDay).padStart(2, "0")}</p><p className="mt-1 text-sm text-slate-500">Acompanhe revisão, aprovação e execução deste vencimento.</p></div></div><div className="mt-3 grid gap-3 lg:grid-cols-2">{batchesForSelectedDay.map((batch) => <BatchCard key={batch.id} batch={batch} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}{batchesForSelectedDay.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhuma prévia de lote foi criada para este dia nesta competência.</div>}</div></section>
+
+      <details className="mt-7 rounded-xl border border-slate-200 bg-white" open>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 font-extrabold">
+          <span>Prévias por empresa</span>
+          <span className="text-sm font-semibold text-slate-500">Revise, aprove e selecione</span>
+        </summary>
+        <div className="border-t border-slate-200 p-5">
+          <div className="grid gap-5 xl:grid-cols-[1fr_300px]">
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="min-w-[760px] w-full text-left text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                  <tr><th className="w-12 px-5 py-3"></th><th className="px-5 py-3">Empresa</th><th className="px-5 py-3">Status</th><th className="px-5 py-3 text-right">Valor</th><th className="px-5 py-3 text-right">Ação</th></tr>
+                </thead>
+                <tbody>
+                  {drafts.map((draft) => {
+                    const canSelect = draft.status === "Approved";
+                    const canApprove = draft.status === "PendingReview" || draft.status === "AwaitingReview" || draft.status === "Draft";
+                    return <tr key={draft.id} className="border-b border-slate-100 last:border-0">
+                      <td className="px-5 py-4"><input aria-label={`Selecionar ${draft.companyName}`} checked={selectedDraftIds.includes(draft.id)} disabled={!canSelect} type="checkbox" onChange={() => onToggleDraft(draft.id)} /></td>
+                      <td className="px-5 py-4"><p className="font-bold">{draft.companyName}</p><p className="mt-0.5 text-xs text-slate-500">{draft.companyTaxId} · {draft.items.length} pessoa(s)</p></td>
+                      <td className="px-5 py-4"><span className={`badge ${statusBadge(draft.status)}`}>{readableStatus(draft.status)}</span></td>
+                      <td className="px-5 py-4 text-right font-extrabold">{money(draft.totalAmount)}</td>
+                      <td className="px-5 py-4 text-right">{canApprove ? <button className="button-secondary h-9" onClick={() => onApproveDraft(draft.id)}><CheckCircle2 size={16} />Aprovar prévia</button> : <span className="text-xs font-semibold text-slate-400">{canSelect ? "Pronta para o lote" : "Sem ação"}</span>}</td>
+                    </tr>;
+                  })}
+                  {drafts.length === 0 && <EmptyTable colSpan={5} message="Ainda não há prévias nesta competência. Importe um fechamento do EVO pela tela de Cobranças." />}
+                </tbody>
+              </table>
+            </div>
+            <aside className="rounded-xl bg-slate-50 p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Prévias selecionadas</p>
+              <p className="mt-2 text-2xl font-extrabold">{money(totalDraftValue)}</p>
+              <p className="mt-1 text-sm text-slate-500">{selectedDraftIds.length} empresa(s) selecionada(s)</p>
+              <button className="button-secondary mt-5 w-full" disabled={selectedDraftIds.length === 0} onClick={() => onCreatePreview(false)}><FileText size={17} />Gerar lote para revisão</button>
+            </aside>
+          </div>
+        </div>
+      </details>
+    </>}
+  </section>;
+}
+
+function MembershipSummary({ memberships }: { memberships: EvoMembership[] }) {
+  if (memberships.length === 0) {
+    return <span className="text-slate-400">Sem matrícula</span>;
+  }
+
+  const membershipsByName = new Map<string, EvoMembership>();
+  for (const membership of memberships) {
+    const normalizedMembershipName = membership.name.trim().toLocaleLowerCase("pt-BR");
+    if (!membershipsByName.has(normalizedMembershipName)) {
+      membershipsByName.set(normalizedMembershipName, membership);
+    }
+  }
+
+  const distinctMemberships = Array.from(membershipsByName.values());
+  const visibleMemberships = distinctMemberships.slice(0, 2);
+  const remainingMembershipCount = distinctMemberships.length - visibleMemberships.length;
+
+  return <div className="flex max-w-[390px] flex-wrap gap-1.5">
+    {visibleMemberships.map((membership) => <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600" key={membership.memberMembershipId}>{membership.name}</span>)}
+    {remainingMembershipCount > 0 && <span className="rounded bg-orange/10 px-2 py-1 text-xs font-extrabold text-orange">+{remainingMembershipCount} contratos</span>}
+  </div>;
+}
+
+function CompactEvoMembersPage({ members, corporateMembers, search, onSearchChange }: {
+  members: EvoMember[];
+  corporateMembers: EvoCorporateMember[];
+  search: string;
+  onSearchChange: (value: string) => void;
+}) {
+  const companyNamesByMemberId = useMemo(() => {
+    const companyNames = new Map<number, string[]>();
+    for (const corporateMember of corporateMembers) {
+      const currentNames = companyNames.get(corporateMember.memberId) ?? [];
+      if (!currentNames.includes(corporateMember.corporatePartnershipName)) {
+        currentNames.push(corporateMember.corporatePartnershipName);
+      }
+      companyNames.set(corporateMember.memberId, currentNames);
+    }
+    return companyNames;
+  }, [corporateMembers]);
+
+  return <section>
+    <PageHeading title="Colaboradores" description="Colaboradores ativos do Evo. A empresa pagadora aparece somente quando o vínculo foi confirmado." />
+    <div className="mb-4 flex max-w-md items-center gap-2"><Search className="absolute ml-3 text-slate-400" size={17} /><input className="field w-full pl-10" placeholder="Buscar por nome ou unidade" value={search} onChange={(event) => onSearchChange(event.target.value)} /></div>
+    <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[920px] w-full text-left text-sm"><thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Colaborador</th><th className="px-5 py-3">Unidade</th><th className="px-5 py-3">Empresa pagadora</th><th className="px-5 py-3">Matrículas</th></tr></thead><tbody>
+      {members.map((member) => { const companyNames = companyNamesByMemberId.get(member.id); return <tr key={member.id} className="border-b border-slate-100 last:border-0"><td className="px-5 py-4"><p className="font-bold">{member.firstName} {member.lastName}</p><p className="mt-0.5 text-xs text-slate-500">ID Evo {member.id}</p></td><td className="px-5 py-4 text-slate-600">{member.branchName}</td><td className="px-5 py-4 text-slate-600">{companyNames?.join(", ") ?? "Ainda não identificada"}</td><td className="px-5 py-4"><MembershipSummary memberships={member.memberships} /></td></tr>; })}
+      {members.length === 0 && <EmptyTable colSpan={4} message="O Evo não retornou colaboradores ativos para esta consulta." />}
+    </tbody></table></div></div>
+  </section>;
+}
+
+function EvoMembersPage({ members, corporateMembers, search, onSearchChange }: {
+  members: EvoMember[];
+  corporateMembers: EvoCorporateMember[];
+  search: string;
+  onSearchChange: (value: string) => void;
+}) {
+  const companyNamesByMemberId = useMemo(() => {
+    const companyNames = new Map<number, string[]>();
+    for (const corporateMember of corporateMembers) {
+      const currentNames = companyNames.get(corporateMember.memberId) ?? [];
+      if (!currentNames.includes(corporateMember.corporatePartnershipName)) {
+        currentNames.push(corporateMember.corporatePartnershipName);
+      }
+      companyNames.set(corporateMember.memberId, currentNames);
+    }
+    return companyNames;
+  }, [corporateMembers]);
+
+  return <section>
+    <PageHeading title="Colaboradores" description="Colaboradores ativos do Evo. A empresa pagadora aparece somente quando o vínculo foi confirmado." />
+    <div className="mb-4 flex max-w-md items-center gap-2"><Search className="absolute ml-3 text-slate-400" size={17} /><input className="field w-full pl-10" placeholder="Buscar por nome ou unidade" value={search} onChange={(event) => onSearchChange(event.target.value)} /></div>
+    <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[820px] w-full text-left text-sm"><thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Colaborador</th><th className="px-5 py-3">Unidade</th><th className="px-5 py-3">Empresa pagadora</th><th className="px-5 py-3">Matrículas</th></tr></thead><tbody>
+      {members.map((member) => { const companyNames = companyNamesByMemberId.get(member.id); return <tr key={member.id} className="border-b border-slate-100 last:border-0"><td className="px-5 py-4"><p className="font-bold">{member.firstName} {member.lastName}</p><p className="mt-0.5 text-xs text-slate-500">ID Evo {member.id}</p></td><td className="px-5 py-4 text-slate-600">{member.branchName}</td><td className="px-5 py-4 text-slate-600">{companyNames?.join(", ") ?? "Ainda não identificada"}</td><td className="px-5 py-4"><div className="flex flex-wrap gap-1.5">{member.memberships.length === 0 ? <span className="text-slate-400">Sem matrícula</span> : member.memberships.map((membership) => <span className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600" key={membership.memberMembershipId}>{membership.name}</span>)}</div></td></tr>; })}
+      {members.length === 0 && <EmptyTable colSpan={4} message="O Evo não retornou colaboradores ativos para esta consulta." />}
+    </tbody></table></div></div>
+  </section>;
+}
+
+function CorporateMembersPage({ members, hasMore, search, onLoadMore, onSearchChange }: {
+  members: EvoCorporateMember[];
+  hasMore: boolean;
+  search: string;
+  onLoadMore: () => void;
+  onSearchChange: (value: string) => void;
+}) {
+  return <section>
+    <PageHeading title="Colaboradores" description="Colaboradores com empresa pagadora identificada explicitamente nas vendas do Evo." />
+    <div className="mb-4 flex max-w-md items-center gap-2">
+      <Search className="absolute ml-3 text-slate-400" size={17} />
+      <input className="field w-full pl-10" placeholder="Buscar colaborador, contrato ou empresa" value={search} onChange={(event) => onSearchChange(event.target.value)} />
+    </div>
+    <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[820px] w-full text-left text-sm">
+      <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Colaborador</th><th className="px-5 py-3">Empresa pagadora</th><th className="px-5 py-3">Contrato</th><th className="px-5 py-3 text-right">Valor da venda</th></tr></thead>
+      <tbody>
+        {members.map((member) => <tr key={member.memberMembershipId} className="border-b border-slate-100 last:border-0"><td className="px-5 py-4"><p className="font-bold">{member.memberName}</p><p className="mt-0.5 text-xs text-slate-500">Membro Evo #{member.memberId}</p></td><td className="px-5 py-4"><p className="font-semibold text-slate-700">{member.corporatePartnershipName}</p><p className="mt-0.5 text-xs text-slate-500">Parceria Evo #{member.corporatePartnershipId}</p></td><td className="px-5 py-4 text-slate-600">{member.membershipName ?? "Não informado"}</td><td className="px-5 py-4 text-right font-extrabold">{money(member.saleValue)}</td></tr>)}
+        {members.length === 0 && <EmptyTable colSpan={4} message="Nenhum vínculo corporativo foi encontrado nesta página do Evo. Carregue a próxima página para continuar a busca." />}
+      </tbody>
+    </table></div></div>
+    {hasMore && <button className="button-secondary mt-4" onClick={onLoadMore}><RefreshCw size={17} />Carregar próxima página do Evo</button>}
+  </section>;
+}
+
+function CompanyDetailPage({ company, onBack, onChangeStatus, onOpenCharges, onRefreshRegistry, onSave }: {
+  company: Company;
+  onBack: () => void;
+  onChangeStatus: (activate: boolean) => void;
+  onOpenCharges: () => void;
+  onRefreshRegistry: () => void;
+  onSave: (values: CompanyFormValues) => void;
+}) {
+  const [displayName, setDisplayName] = useState(company.displayName);
+  const [billingDay, setBillingDay] = useState(company.billingDay ? String(company.billingDay) : "");
+  const [sandboxCustomerId, setSandboxCustomerId] = useState(company.asaasSandboxCustomerId ?? "");
+  const [productionCustomerId, setProductionCustomerId] = useState(company.asaasProductionCustomerId ?? "");
+  const [members, setMembers] = useState<CompanyMember[]>([]);
+  const [billingHistory, setBillingHistory] = useState<CompanyBillingHistoryEntry[]>([]);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDisplayName(company.displayName);
+    setBillingDay(company.billingDay ? String(company.billingDay) : "");
+    setSandboxCustomerId(company.asaasSandboxCustomerId ?? "");
+    setProductionCustomerId(company.asaasProductionCustomerId ?? "");
+  }, [company]);
+
+  useEffect(() => {
+    let isCurrentCompany = true;
+    setDetailError(null);
+    void Promise.all([
+      api.getCatalogCompanyMembers(company.taxId),
+      api.getCatalogCompanyBillingHistory(company.taxId),
+    ])
+      .then(([memberData, historyData]) => {
+        if (!isCurrentCompany) return;
+        setMembers(memberData);
+        setBillingHistory(historyData);
+      })
+      .catch((error: unknown) => {
+        if (!isCurrentCompany) return;
+        setDetailError(error instanceof Error ? error.message : "Não foi possível carregar os detalhes da empresa.");
+      });
+    return () => { isCurrentCompany = false; };
+  }, [company.taxId]);
+
+  const address = company.registryAddress;
+
+  return <section className="max-w-[1100px] animate-[fade-in_180ms_ease-out]">
+    <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
+
+    <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <h1 className="text-2xl font-extrabold tracking-tight">{company.displayName}</h1>
+        <p className="mt-1 text-sm text-slate-500">{company.formattedTaxId} · origem {companySourceLabel(company.source)} · {registryStatusLabel(company)}</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button className="button-secondary" onClick={onRefreshRegistry}><RefreshCw size={17} />Atualizar dados cadastrais</button>
+        <button className="button-secondary" onClick={() => onChangeStatus(!company.isActive)}>{company.isActive ? "Inativar" : "Reativar"}</button>
+        <button className="button-primary" onClick={onOpenCharges}>Preparar cobranças</button>
+      </div>
+    </div>
+
+    {detailError && <Callout tone="error" onDismiss={() => setDetailError(null)}>{detailError}</Callout>}
+
+    <div className="mt-5 flex flex-wrap items-center gap-2">
+      <span className={`badge ${company.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{company.isActive ? "Ativa" : "Inativa"}</span>
+      <span className="badge bg-slate-100 text-slate-700">{company.memberCount} {company.memberCount === 1 ? "pessoa" : "pessoas"} na última sincronização</span>
+      <span className="badge bg-slate-100 text-slate-700">{companyAsaasLabel(company)}</span>
+      {company.requiresReviewAfterReappearing && <span className="badge bg-amber-50 text-amber-700"><CircleAlert size={14} />Reapareceu na planilha e continua inativa</span>}
+    </div>
+
+    <div className="mt-7 grid gap-5 xl:grid-cols-[1fr_360px]">
+      <div className="space-y-5">
+        <div className="panel p-5">
+          <p className="font-extrabold">Dados cadastrais</p>
+          <p className="mt-1 text-sm text-slate-500">Vêm do cadastro público de CNPJ e nunca sobrescrevem o nome operacional.</p>
+          <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+            <CompanyFact label="Nome observado no EVO" value={company.evoName} />
+            <CompanyFact label="Razão social" value={company.legalName} />
+            <CompanyFact label="Nome fantasia" value={company.tradeName} />
+            <CompanyFact label="Situação cadastral" value={company.registrationStatus} />
+            <CompanyFact label="Última aparição na planilha" value={company.lastSeenAt ? date(company.lastSeenAt) : null} />
+            <CompanyFact label="Última consulta cadastral" value={company.registryLastCheckedAt ? date(company.registryLastCheckedAt) : null} />
+          </dl>
+          {address && (
+            <div className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+              <p className="text-xs font-extrabold uppercase tracking-wide text-slate-500">Endereço cadastral</p>
+              <p className="mt-1">{[address.street, address.number, address.complement].filter(Boolean).join(", ")}</p>
+              <p>{[address.neighborhood, address.city, address.state].filter(Boolean).join(" · ")} {address.postalCode && `· CEP ${address.postalCode}`}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="panel overflow-hidden">
+          <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4"><p className="font-extrabold">Pessoas na última sincronização</p><p className="mt-1 text-sm text-slate-500">Retrato da planilha do EVO. Não gera prévia nem cobrança.</p></div>
+          <div className="overflow-x-auto"><table className="min-w-[560px] w-full text-left text-sm">
+            <thead className="border-b border-slate-200 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Pessoa</th><th className="px-5 py-3">Contrato</th><th className="px-5 py-3 text-right">Linha</th></tr></thead>
+            <tbody>
+              {members.map((member) => <tr key={`${member.sourceRowNumber}-${member.memberName}`} className="border-b border-slate-100 last:border-0"><td className="px-5 py-3.5 font-bold">{member.memberName}</td><td className="px-5 py-3.5 text-slate-600">{member.contractName ?? "Não informado"}</td><td className="px-5 py-3.5 text-right text-slate-500">{member.sourceRowNumber}</td></tr>)}
+              {members.length === 0 && <EmptyTable colSpan={3} message="Esta empresa ainda não apareceu em nenhuma sincronização do catálogo." />}
+            </tbody>
+          </table></div>
+        </div>
+
+        <div className="panel overflow-hidden">
+          <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4"><p className="font-extrabold">Histórico de faturamentos</p><p className="mt-1 text-sm text-slate-500">Prévias criadas para o CNPJ {company.formattedTaxId}.</p></div>
+          <div className="overflow-x-auto"><table className="min-w-[640px] w-full text-left text-sm">
+            <thead className="border-b border-slate-200 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Criada em</th><th className="px-5 py-3">Situação</th><th className="px-5 py-3">Itens</th><th className="px-5 py-3 text-right">Total</th></tr></thead>
+            <tbody>
+              {billingHistory.map((entry) => <tr key={entry.billingDraftId} className="border-b border-slate-100 last:border-0"><td className="px-5 py-3.5 font-bold">{date(entry.createdAt)}</td><td className="px-5 py-3.5"><span className={`badge ${statusBadge(entry.status)}`}>{readableStatus(entry.status)}</span></td><td className="px-5 py-3.5 text-slate-600">{entry.itemCount}</td><td className="px-5 py-3.5 text-right font-extrabold">{money(entry.totalAmount)}</td></tr>)}
+              {billingHistory.length === 0 && <EmptyTable colSpan={4} message="Nenhuma prévia de faturamento foi criada para esta empresa." />}
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <aside className="panel h-fit p-5">
+        <div className="flex items-center gap-2"><Settings2 size={19} className="text-orange" /><p className="font-extrabold">Dados operacionais</p></div>
+        <p className="mt-2 text-sm leading-6 text-slate-500">Configurar um cliente Asaas aqui apenas registra um vínculo existente. Nenhuma cobrança é criada.</p>
+        <form
+          className="mt-5 space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSave({
+              displayName,
+              billingDay: billingDay ? Number(billingDay) : null,
+              asaasSandboxCustomerId: sandboxCustomerId.trim() || null,
+              asaasProductionCustomerId: productionCustomerId.trim() || null,
+            });
+          }}
+        >
+          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional
+            <input className="field mt-1.5 w-full" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+          </label>
+          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
+            <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
+              <option value="">Sem dia definido</option>
+              {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
+            </select>
+          </label>
+          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Sandbox
+            <input className="field mt-1.5 w-full" placeholder="Opcional" value={sandboxCustomerId} onChange={(event) => setSandboxCustomerId(event.target.value)} />
+          </label>
+          <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Produção
+            <input className="field mt-1.5 w-full" placeholder="Opcional" value={productionCustomerId} onChange={(event) => setProductionCustomerId(event.target.value)} />
+          </label>
+          <button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar</button>
+        </form>
+        <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Atualizada em {date(company.updatedAt)} por {company.updatedBy}.</p>
+      </aside>
+    </div>
+  </section>;
+}
+
+function CompanyFact({ label, value }: { label: string; value: string | null }) {
+  return <div><dt className="text-xs font-extrabold uppercase tracking-wide text-slate-500">{label}</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{value ?? "—"}</dd></div>;
+}
+
+function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (taxId: string, values: CompanyFormValues) => void }) {
+  const [taxId, setTaxId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [billingDay, setBillingDay] = useState("");
+  const [sandboxCustomerId, setSandboxCustomerId] = useState("");
+  const [productionCustomerId, setProductionCustomerId] = useState("");
+
+  return <section className="max-w-[640px] animate-[fade-in_180ms_ease-out]">
+    <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
+    <PageHeading title="Nova empresa" description="Cadastre uma empresa pagadora que ainda não apareceu na planilha do EVO. O CNPJ é validado antes de salvar." />
+    <form
+      className="panel space-y-3 p-5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onCreate(taxId, {
+          displayName,
+          billingDay: billingDay ? Number(billingDay) : null,
+          asaasSandboxCustomerId: sandboxCustomerId.trim() || null,
+          asaasProductionCustomerId: productionCustomerId.trim() || null,
+        });
+      }}
+    >
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">CNPJ
+        <input className="field mt-1.5 w-full" required placeholder="00.000.000/0000-00" value={taxId} onChange={(event) => setTaxId(event.target.value)} />
+      </label>
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional
+        <input className="field mt-1.5 w-full" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+      </label>
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
+        <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
+          <option value="">Sem dia definido</option>
+          {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
+        </select>
+      </label>
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Sandbox
+        <input className="field mt-1.5 w-full" placeholder="Opcional" value={sandboxCustomerId} onChange={(event) => setSandboxCustomerId(event.target.value)} />
+      </label>
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Cliente Asaas Produção
+        <input className="field mt-1.5 w-full" placeholder="Opcional" value={productionCustomerId} onChange={(event) => setProductionCustomerId(event.target.value)} />
+      </label>
+      <button className="button-primary w-full" type="submit"><Plus size={17} />Cadastrar empresa</button>
+    </form>
+  </section>;
+}
+
+function CompanyCatalogImportPage({ onBack, onSynchronized }: {
+  onBack: () => void;
+  onSynchronized: (message: string) => Promise<void>;
+}) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<CompanyCatalogImportPreview | null>(null);
+  const [result, setResult] = useState<CompanyCatalogImportResult | null>(null);
+  const [isWorking, setIsWorking] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  async function loadPreview(file: File) {
+    setIsWorking(true);
+    setImportError(null);
+    setResult(null);
+    try {
+      setSelectedFile(file);
+      setPreview(await api.previewCompanyCatalogImport(file));
+    } catch (error) {
+      setPreview(null);
+      setImportError(error instanceof Error ? error.message : "Não foi possível conferir a planilha.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function synchronize() {
+    if (!selectedFile) return;
+
+    setIsWorking(true);
+    setImportError(null);
+    try {
+      const synchronization = await api.synchronizeCompanyCatalog(selectedFile, operatorId);
+      setResult(synchronization);
+      await onSynchronized(
+        `Catálogo sincronizado: ${synchronization.createdCompanyCount} criada(s), `
+        + `${synchronization.updatedCompanyCount} atualizada(s), `
+        + `${synchronization.preservedCompanyCount} com nome operacional preservado, `
+        + `${synchronization.unseenCompanyCount} não vista(s) nesta planilha.`,
+      );
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Não foi possível sincronizar o catálogo.");
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  return <section className="max-w-[1040px] animate-[fade-in_180ms_ease-out]">
+    <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
+    <PageHeading title="Importar catálogo do EVO" description="Use a exportação completa do CRM 2.0 para descobrir empresas pelo CNPJ." />
+
+    <Callout tone="warning">
+      Esta importação não usa valores financeiros e não cria prévia nem cobrança. Linhas com valor vazio, zero ou inválido continuam descobrindo a empresa.
+    </Callout>
+
+    {importError && <Callout tone="error" onDismiss={() => setImportError(null)}>{importError}</Callout>}
+
+    <div className="panel p-5">
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Planilha .xlsx exportada do EVO
+        <input
+          className="field mt-1.5 w-full"
+          type="file"
+          accept=".xlsx"
+          onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadPreview(file); }}
+        />
+      </label>
+      {isWorking && <p className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-slate-500"><LoaderCircle className="animate-spin text-orange" size={17} />Processando a planilha...</p>}
+    </div>
+
+    {preview && (
+      <>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <ImportMetric label="Empresas encontradas" value={preview.discoveredCompanyCount.toString()} />
+          <ImportMetric label="Pessoas encontradas" value={preview.discoveredMemberCount.toString()} />
+          <ImportMetric label="CNPJs inválidos" value={preview.invalidTaxIdCount.toString()} />
+          <ImportMetric label="Conflitos de nome" value={preview.nameConflictCount.toString()} />
+          <ImportMetric label="Avisos" value={preview.warnings.length.toString()} />
+        </div>
+
+        <div className="panel mt-5 overflow-hidden">
+          <div className="border-b border-slate-200 bg-slate-50/70 px-5 py-4"><p className="font-extrabold">Empresas que serão sincronizadas</p><p className="mt-1 text-sm text-slate-500">{preview.analyzedRowCount} linhas analisadas em {preview.fileName}.</p></div>
+          <div className="max-h-[420px] overflow-auto"><table className="min-w-[640px] w-full text-left text-sm">
+            <thead className="sticky top-0 border-b border-slate-200 bg-white text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Empresa no EVO</th><th className="px-5 py-3">CNPJ</th><th className="px-5 py-3 text-right">Pessoas</th></tr></thead>
+            <tbody>
+              {preview.companies.map((company) => <tr key={company.taxId} className="border-b border-slate-100 last:border-0"><td className="px-5 py-3.5 font-bold">{company.evoName}</td><td className="px-5 py-3.5 text-slate-600">{company.formattedTaxId}</td><td className="px-5 py-3.5 text-right text-slate-600">{company.memberCount}</td></tr>)}
+              {preview.companies.length === 0 && <EmptyTable colSpan={3} message="Nenhuma empresa com CNPJ válido foi encontrada nesta planilha." />}
+            </tbody>
+          </table></div>
+        </div>
+
+        {preview.warnings.length > 0 && (
+          <div className="panel mt-5 p-5">
+            <p className="font-extrabold">Avisos</p>
+            <p className="mt-1 text-sm text-slate-500">Linhas que não geraram empresa. Nenhum cadastro é inventado a partir delas.</p>
+            <ul className="mt-3 max-h-56 space-y-1.5 overflow-auto text-sm text-slate-600">
+              {preview.warnings.slice(0, 100).map((warning, warningIndex) => (
+                <li key={`${warning.code}-${warning.sourceRowNumber}-${warningIndex}`} className="rounded bg-slate-50 px-3 py-2">
+                  {warning.sourceRowNumber ? `Linha ${warning.sourceRowNumber}: ` : ""}{warning.message}
+                </li>
+              ))}
+            </ul>
+            {preview.warnings.length > 100 && <p className="mt-2 text-xs text-slate-500">Mostrando os 100 primeiros de {preview.warnings.length} avisos.</p>}
+          </div>
+        )}
+
+        <div className="panel mt-5 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-extrabold">Confirmar sincronização</p>
+            <p className="mt-1 text-sm text-slate-500">Nomes operacionais editados, agendas, situação e vínculos Asaas são preservados. Empresas ausentes não são inativadas.</p>
+          </div>
+          <button className="button-primary shrink-0" disabled={isWorking || preview.companies.length === 0} onClick={() => void synchronize()}><CheckCircle2 size={17} />Sincronizar catálogo</button>
+        </div>
+      </>
+    )}
+
+    {result && (
+      <div className="panel mt-5 p-5">
+        <p className="font-extrabold">Resultado da sincronização</p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <ImportMetric label="Criadas" value={result.createdCompanyCount.toString()} />
+          <ImportMetric label="Atualizadas" value={result.updatedCompanyCount.toString()} />
+          <ImportMetric label="Nome preservado" value={result.preservedCompanyCount.toString()} />
+          <ImportMetric label="Não vistas" value={result.unseenCompanyCount.toString()} />
+          <ImportMetric label="Cadastro enriquecido" value={result.registryEnrichedCount.toString()} />
+        </div>
+        {result.registryUnavailableCount > 0 && (
+          <p className="mt-3 text-sm text-slate-500">{result.registryUnavailableCount} empresa(s) ficaram sem dados do cadastro público. O catálogo continua funcionando com o nome do EVO.</p>
+        )}
+      </div>
+    )}
+  </section>;
 }
 
 function BatchCard({ batch, onApprove, onExecute }: { batch: ChargeBatch; onApprove: () => void; onExecute: () => void }) {
@@ -502,13 +1532,55 @@ function BatchCard({ batch, onApprove, onExecute }: { batch: ChargeBatch; onAppr
   return <article className="panel p-5"><div className="flex items-start justify-between gap-3"><div><p className="font-extrabold">Lote de {date(batch.dueDate)}</p><p className="mt-1 text-xs font-semibold text-slate-500">{batch.items.length} prévia(s) · criado em {date(batch.createdAt)}</p></div><span className={`badge ${statusBadge(batch.status)}`}>{readableStatus(batch.status)}</span></div><div className="mt-5 grid grid-cols-3 gap-2 text-center"><SmallMetric label="Itens" value={batch.items.length.toString()} /><SmallMetric label="Criadas" value={createdItems.toString()} /><SmallMetric label="Falhas" value={failedItems.toString()} /></div><div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && <button className="button-primary h-9" onClick={onExecute}>Executar</button>}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
 }
 
-function IntegrationsPage({ status }: { status: IntegrationStatus | null }) {
+function LegacyIntegrationsPage({ status }: { status: IntegrationStatus | null }) {
   if (!status) return <div className="panel p-6 text-sm text-slate-500">Não foi possível obter o estado das integrações.</div>;
   return <section><PageHeading title="Integrações" description="Estado atual das conexões utilizadas pelo faturamento." /><div className="grid gap-5 lg:grid-cols-2"><IntegrationCard icon={Database} title="Evo" description={status.evoMessage} configured={status.evoIsConfigured} label={status.evoIsConfigured ? "Conectado" : "Aguardando credenciais"} /><IntegrationCard icon={CreditCard} title="Asaas · Sandbox" description="Consulta de clientes e emissão segura de cobranças de teste." configured={status.sandbox.isConfigured} label={status.sandbox.chargeCreationEnabled ? "Criação habilitada" : "Somente consulta"} /><IntegrationCard icon={ShieldCheck} title="Asaas · Produção" description="A criação real fica bloqueada até credencial e habilitação explícita no servidor." configured={status.production.isConfigured && status.production.chargeCreationEnabled} label={status.production.isConfigured ? "Configuração incompleta" : "Não configurado"} /></div></section>;
 }
 
 function IntegrationCard({ icon: Icon, title, description, configured, label }: { icon: typeof Database; title: string; description: string; configured: boolean; label: string }) {
   return <article className="panel p-5"><div className="flex items-start justify-between"><div className={`flex h-10 w-10 items-center justify-center rounded-lg ${configured ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}><Icon size={20} /></div><span className={`badge ${configured ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{configured ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}{label}</span></div><p className="mt-5 font-extrabold">{title}</p><p className="mt-2 text-sm leading-6 text-slate-500">{description}</p></article>;
+}
+
+function IntegrationsPage({ status, activeCatalogCompanyCount, latestImport, onOpenCatalog, onImportCatalog }: {
+  status: IntegrationStatus | null;
+  activeCatalogCompanyCount: number;
+  latestImport: CompanyCatalogImportSummary | null;
+  onOpenCatalog: () => void;
+  onImportCatalog: () => void;
+}) {
+  if (!status) return <div className="panel p-6 text-sm text-slate-500">Não foi possível obter o estado das integrações.</div>;
+
+  return <section>
+    <PageHeading title="Integrações" description="Acompanhe as conexões e mantenha o catálogo de empresas pronto para o faturamento." />
+    <div className="grid gap-5 lg:grid-cols-2"><IntegrationCard icon={Database} title="Evo" description={status.evoMessage} configured={status.evoIsConfigured} label={status.evoIsConfigured ? "Conectado" : "Aguardando credenciais"} /><IntegrationCard icon={CreditCard} title="Asaas · Sandbox" description="Consulta de clientes e emissão segura de cobranças de teste." configured={status.sandbox.isConfigured} label={status.sandbox.chargeCreationEnabled ? "Criação habilitada" : "Somente consulta"} /><IntegrationCard icon={ShieldCheck} title="Asaas · Produção" description="A criação real fica bloqueada até credencial e habilitação explícita no servidor." configured={status.production.isConfigured && status.production.chargeCreationEnabled} label={status.production.isConfigured ? "Configuração incompleta" : "Não configurado"} /><IntegrationCard icon={Building2} title="Cadastro público de CNPJ" description="A BrasilAPI enriquece razão social, situação e endereço. O catálogo continua funcionando com o nome do EVO quando ela falha." configured label="Enriquecimento opcional" /></div>
+
+    <div className="panel mt-5 p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="font-extrabold">Sincronização do catálogo de empresas</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {latestImport
+              ? `Última sincronização em ${date(latestImport.synchronizedAt)} por ${latestImport.operatorId}, a partir de ${latestImport.fileName}.`
+              : "Nenhuma sincronização registrada. Importe a exportação completa do CRM 2.0 do EVO para popular o catálogo."}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <button className="button-secondary" onClick={onOpenCatalog}><Building2 size={17} />Abrir catálogo</button>
+          <button className="button-primary" onClick={onImportCatalog}><FileSpreadsheet size={17} />Importar catálogo do EVO</button>
+        </div>
+      </div>
+      {latestImport && (
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <SmallMetric label="Empresas encontradas" value={latestImport.discoveredCompanyCount.toString()} />
+          <SmallMetric label="Criadas" value={latestImport.createdCompanyCount.toString()} />
+          <SmallMetric label="Atualizadas" value={latestImport.updatedCompanyCount.toString()} />
+          <SmallMetric label="Não vistas" value={latestImport.unseenCompanyCount.toString()} />
+          <SmallMetric label="Avisos" value={latestImport.warningCount.toString()} />
+        </div>
+      )}
+      <p className="mt-4 border-t border-slate-100 pt-4 text-sm text-slate-500">{activeCatalogCompanyCount} empresa(s) ativa(s) no catálogo.</p>
+    </div>
+  </section>;
 }
 
 function ConfirmationModal({ batch, confirmationText, environment, onCancel, onConfirmationTextChange, onConfirm }: { batch: ChargeBatch; confirmationText: string; environment: AsaasEnvironment; onCancel: () => void; onConfirmationTextChange: (value: string) => void; onConfirm: () => void }) {
