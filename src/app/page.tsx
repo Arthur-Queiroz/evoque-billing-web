@@ -247,6 +247,10 @@ export default function BillingApplication() {
   const [scheduleDay, setScheduleDay] = useState("20");
   const [dueDate, setDueDate] = useState("");
   const messageAreaRef = useRef<HTMLDivElement>(null);
+  // Contador de mensagens exibidas. Repetir uma ação que falha do mesmo jeito
+  // não muda o texto, e sem este contador a rolagem não voltaria a acontecer:
+  // o operador clicaria de novo e teria a impressão de que nada respondeu.
+  const [shownMessageCount, setShownMessageCount] = useState(0);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
@@ -278,6 +282,22 @@ export default function BillingApplication() {
     () => catalogCompanies.find((company) => company.taxId === selectedCompanyTaxId) ?? null,
     [catalogCompanies, selectedCompanyTaxId],
   );
+
+  /// Erro e sucesso nunca coexistem. Antes, um erro antigo continuava na tela
+  /// depois de a ação seguinte dar certo: aprovar um lote funcionava e o
+  /// operador seguia lendo a recusa da tentativa anterior, concluindo que a
+  /// aprovação tinha falhado.
+  function showError(message: string) {
+    setNoticeMessage(null);
+    setErrorMessage(message);
+    setShownMessageCount((currentCount) => currentCount + 1);
+  }
+
+  function showNotice(message: string) {
+    setErrorMessage(null);
+    setNoticeMessage(message);
+    setShownMessageCount((currentCount) => currentCount + 1);
+  }
 
   async function refreshData(showLoading = false) {
     if (showLoading) setIsLoading(true);
@@ -326,14 +346,14 @@ export default function BillingApplication() {
       const firstFailure = Object.values(requiredResultsByDataSet)
         .find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
       if (firstFailure) {
-        setErrorMessage(
+        showError(
           firstFailure.reason instanceof Error
             ? firstFailure.reason.message
             : "Parte dos dados não pôde ser atualizada.",
         );
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar a API.");
+      showError(error instanceof Error ? error.message : "Não foi possível consultar a API.");
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -360,7 +380,7 @@ export default function BillingApplication() {
     try {
       await refreshCatalogCompanies(filterKey, search);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível consultar o catálogo de empresas.");
+      showError(error instanceof Error ? error.message : "Não foi possível consultar o catálogo de empresas.");
     }
   }
 
@@ -372,7 +392,7 @@ export default function BillingApplication() {
       setSelectedDraftIds((currentIds) => currentIds.filter((draftId) => draftData.some((draft) => draft.id === draftId)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Não foi possível carregar os faturamentos da competência.";
-      if (!message.includes("404") && !message.includes("não foi encontrada")) setErrorMessage(message);
+      if (!message.includes("404") && !message.includes("não foi encontrada")) showError(message);
       setDrafts([]);
       setBatches([]);
     }
@@ -393,12 +413,12 @@ export default function BillingApplication() {
   // Sem isto, uma ação recusada pela API parece não ter feito nada: o operador
   // clica em "Gerar prévia", a resposta chega, e ele continua olhando o botão.
   useEffect(() => {
-    if (!errorMessage && !noticeMessage) {
+    if (shownMessageCount === 0) {
       return;
     }
 
     messageAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [errorMessage, noticeMessage]);
+  }, [shownMessageCount]);
 
   function selectEnvironment(targetEnvironment: AsaasEnvironment) {
     if (targetEnvironment === environment) {
@@ -406,7 +426,7 @@ export default function BillingApplication() {
     }
 
     if (targetEnvironment === "Production" && !productionAvailable) {
-      setNoticeMessage("Produção ainda não está disponível para consulta. Verifique a credencial na tela de Integrações.");
+      showNotice("Produção ainda não está disponível para consulta. Verifique a credencial na tela de Integrações.");
       return;
     }
     setPendingEnvironment(targetEnvironment);
@@ -420,7 +440,7 @@ export default function BillingApplication() {
     setEnvironment(pendingEnvironment);
     setPendingEnvironment(null);
     if (pendingEnvironment === "Production" && !integrationStatus?.production.chargeCreationEnabled) {
-      setNoticeMessage("Produção selecionada em modo de consulta. A emissão de cobranças reais permanece bloqueada.");
+      showNotice("Produção selecionada em modo de consulta. A emissão de cobranças reais permanece bloqueada.");
     }
   }
 
@@ -430,13 +450,13 @@ export default function BillingApplication() {
     setIsCreatingPeriod(true);
     try {
       await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
-      setNoticeMessage(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
+      showNotice(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Não foi possível iniciar o faturamento.";
       if (message.includes("409")) {
-        setNoticeMessage(`O faturamento de ${monthLabel(selectedYear, selectedMonth)} já estava iniciado.`);
+        showNotice(`O faturamento de ${monthLabel(selectedYear, selectedMonth)} já estava iniciado.`);
       } else {
-        setErrorMessage(message);
+        showError(message);
       }
     } finally {
       await refreshData();
@@ -447,32 +467,32 @@ export default function BillingApplication() {
   async function createSelectedPeriod() {
     try {
       await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
-      setNoticeMessage(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
+      showNotice(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
       await refreshData();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível criar a competência.");
+      showError(error instanceof Error ? error.message : "Não foi possível criar a competência.");
     }
   }
 
   async function saveCompany(taxId: string, input: CompanyFormValues) {
     try {
       const savedCompany = await api.updateCatalogCompany(taxId, { ...input, operatorId });
-      setNoticeMessage(`Empresa ${savedCompany.displayName} salva.`);
+      showNotice(`Empresa ${savedCompany.displayName} salva.`);
       await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível salvar a empresa.");
+      showError(error instanceof Error ? error.message : "Não foi possível salvar a empresa.");
     }
   }
 
   async function createCompany(taxId: string, input: CompanyFormValues) {
     try {
       const createdCompany = await api.createCatalogCompany(taxId, { ...input, operatorId });
-      setNoticeMessage(`Empresa ${createdCompany.displayName} cadastrada.`);
+      showNotice(`Empresa ${createdCompany.displayName} cadastrada.`);
       await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
       setSelectedCompanyTaxId(createdCompany.taxId);
       setPage("companyDetail");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível cadastrar a empresa.");
+      showError(error instanceof Error ? error.message : "Não foi possível cadastrar a empresa.");
     }
   }
 
@@ -481,24 +501,24 @@ export default function BillingApplication() {
       const updatedCompany = activate
         ? await api.reactivateCatalogCompany(company.taxId, operatorId)
         : await api.deactivateCatalogCompany(company.taxId, operatorId);
-      setNoticeMessage(
+      showNotice(
         activate
           ? `Empresa ${updatedCompany.displayName} reativada.`
           : `Empresa ${updatedCompany.displayName} inativada. O histórico e os lotes foram preservados.`,
       );
       await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível alterar a situação da empresa.");
+      showError(error instanceof Error ? error.message : "Não foi possível alterar a situação da empresa.");
     }
   }
 
   async function refreshCompanyRegistry(company: Company) {
     try {
       const updatedCompany = await api.refreshCatalogCompanyRegistry(company.taxId, operatorId);
-      setNoticeMessage(`Dados cadastrais atualizados: ${registryStatusLabel(updatedCompany)}.`);
+      showNotice(`Dados cadastrais atualizados: ${registryStatusLabel(updatedCompany)}.`);
       await refreshCatalogCompanies();
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível atualizar os dados cadastrais.");
+      showError(error instanceof Error ? error.message : "Não foi possível atualizar os dados cadastrais.");
     }
   }
 
@@ -509,13 +529,13 @@ export default function BillingApplication() {
         email,
         operatorId,
       );
-      setNoticeMessage(synchronization.message);
+      showNotice(synchronization.message);
       await refreshCatalogCompanies();
     } catch (error) {
       const message = error instanceof Error
         ? error.message
         : "Não foi possível preparar o cliente de teste no Asaas Sandbox.";
-      setErrorMessage(message);
+      showError(message);
     }
   }
 
@@ -526,24 +546,20 @@ export default function BillingApplication() {
         operatorId,
       );
       if (synchronization.status === "Linked") {
-        setNoticeMessage(synchronization.message);
+        showNotice(synchronization.message);
       } else {
-        setErrorMessage(synchronization.message);
+        showError(synchronization.message);
       }
       await refreshCatalogCompanies();
     } catch (error) {
       const message = error instanceof Error
         ? error.message
         : "Não foi possível localizar o cliente no Asaas Produção.";
-      setErrorMessage(message);
+      showError(message);
     }
   }
 
   async function createBatchPreview(scheduled: boolean) {
-    // Limpar antes de agir garante que repetir a ação com o mesmo resultado
-    // volte a mudar o estado e a rolar a mensagem para a vista.
-    setErrorMessage(null);
-    setNoticeMessage(null);
     // O fechamento define o ciclo; o vencimento é escolhido pelo operador e
     // costuma cair no mês seguinte. Enquanto ele não escolher, sugerimos o
     // padrão observado no Asaas: cerca de dez dias após o fechamento.
@@ -560,35 +576,35 @@ export default function BillingApplication() {
         );
       } else {
         if (selectedDraftIds.length === 0) {
-          setErrorMessage("Selecione ao menos uma prévia aprovada.");
+          showError("Selecione ao menos uma prévia aprovada.");
           return;
         }
         await api.createChargeBatchPreview(selectedDraftIds, resolvedDueDate, environment, operatorId);
       }
-      setNoticeMessage("Prévia criada. Nenhuma cobrança foi enviada ao Asaas.");
+      showNotice("Prévia criada. Nenhuma cobrança foi enviada ao Asaas.");
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível criar a prévia do lote.");
+      showError(error instanceof Error ? error.message : "Não foi possível criar a prévia do lote.");
     }
   }
 
   async function approveBatch(chargeBatch: ChargeBatch) {
     try {
       await api.approveChargeBatch(chargeBatch.id, operatorId);
-      setNoticeMessage("Lote aprovado. A execução ainda exige confirmação explícita.");
+      showNotice("Lote aprovado. A execução ainda exige confirmação explícita.");
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível aprovar o lote.");
+      showError(error instanceof Error ? error.message : "Não foi possível aprovar o lote.");
     }
   }
 
   async function approveDraft(billingDraftId: string) {
     try {
       await api.approveBillingDraft(billingDraftId, operatorId);
-      setNoticeMessage("Prévia aprovada. Agora ela pode ser incluída em um lote Sandbox.");
+      showNotice("Prévia aprovada. Agora ela pode ser incluída em um lote Sandbox.");
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível aprovar a prévia.");
+      showError(error instanceof Error ? error.message : "Não foi possível aprovar a prévia.");
     }
   }
 
@@ -597,17 +613,17 @@ export default function BillingApplication() {
     if (!selectedEnvironmentStatus?.chargeCreationEnabled) {
       setConfirmationBatch(null);
       setConfirmationText("");
-      setErrorMessage(`A emissão de cobranças no ambiente ${environment} está bloqueada.`);
+      showError(`A emissão de cobranças no ambiente ${environment} está bloqueada.`);
       return;
     }
     try {
       await api.executeChargeBatch(confirmationBatch.id, operatorId);
       setConfirmationBatch(null);
       setConfirmationText("");
-      setNoticeMessage(`Lote executado no ambiente ${environment}.`);
+      showNotice(`Lote executado no ambiente ${environment}.`);
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Não foi possível executar o lote.");
+      showError(error instanceof Error ? error.message : "Não foi possível executar o lote.");
     }
   }
 
@@ -706,7 +722,7 @@ export default function BillingApplication() {
               <CompanyCatalogImportPage
                 onBack={() => setPage("companies")}
                 onSynchronized={async (message) => {
-                  setNoticeMessage(message);
+                  showNotice(message);
                   setLatestCatalogImport(await api.getLatestCompanyCatalogImport());
                   await Promise.all([
                     refreshCatalogCompanies(),
@@ -747,7 +763,7 @@ export default function BillingApplication() {
                 onYearChange={setSelectedYear}
                 onBack={() => setPage("charges")}
                 onImported={async (message) => {
-                  setNoticeMessage(message);
+                  showNotice(message);
                   await refreshData();
                   setPage("dailyBilling");
                 }}
