@@ -33,10 +33,14 @@ A importação não emite boleto.
 - apresenta resultado e falhas por item;
 - mostra o estado das integrações e a última inclusão em lote.
 
-A exportação completa do CRM 2.0 atualiza duas dimensões independentes:
-adiciona somente empresas ainda inexistentes e compara o snapshot de
-colaboradores pelo `IdCliente`. A base preserva quem saiu como inativo e não
-move uma pessoa automaticamente entre CNPJs.
+A exportação completa do CRM 2.0 **não cadastra empresa**. Ela compara o
+snapshot de colaboradores pelo `IdCliente` e os vincula a empresas já
+cadastradas; um CNPJ fora do catálogo aparece como pendência. A base preserva
+quem saiu como inativo e não move uma pessoa automaticamente entre CNPJs.
+
+A coluna `Profissão` do EVO traz o empregador do aluno, não a empresa pagadora.
+Tratá-la como empresa cadastrou sindicatos, igrejas e planos internos como
+clientes. Nunca reintroduzir descoberta de empresa a partir da planilha.
 
 ## O que o client não faz
 

@@ -1322,7 +1322,10 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
   const isSelectedDueDateInPast = selectedDueDate < currentDate;
   const isDueDateBeforeClosing = selectedDueDate < closingDate;
   const activeSchedulesForDay = schedules.filter((schedule) => schedule.isActive && schedule.closingDay === selectedDay);
-  const batchesForSelectedDay = batches.filter((batch) => Number(batch.dueDate.slice(8, 10)) === selectedDay);
+  // Os lotes não são filtrados por dia. O lote guarda o vencimento, não o
+  // fechamento, e filtrar por `dueDate.getDate()` escondia todo lote cujo
+  // vencimento não caísse exatamente em 02, 18, 20 ou 25 — ou seja, todos.
+  // O operador ficava sem acesso ao botão de aprovar de um lote existente.
   // A agenda guarda o CNPJ normalizado, que é a identidade da empresa no
   // catálogo. Empresas inativas não entram no lote e não são listadas aqui.
   const companiesForSelectedDay = activeSchedulesForDay
@@ -1379,7 +1382,19 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
         </div>
       </section>
 
-      <section className="mt-7"><div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-lg font-extrabold">Lotes do dia {String(selectedDay).padStart(2, "0")}</p><p className="mt-1 text-sm text-slate-500">Acompanhe revisão, aprovação e execução deste vencimento.</p></div></div><div className="mt-3 grid gap-3 lg:grid-cols-2">{batchesForSelectedDay.map((batch) => <BatchCard key={batch.id} batch={batch} chargeCreationEnabled={chargeCreationEnabled} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}{batchesForSelectedDay.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhuma prévia de lote foi criada para este dia nesta competência.</div>}</div></section>
+      <section className="mt-7">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-lg font-extrabold">Lotes de {monthLabel(selectedYear, selectedMonth)}</p>
+            <p className="mt-1 text-sm text-slate-500">Acompanhe revisão, aprovação e execução. O lote guarda o vencimento, não o dia de fechamento.</p>
+          </div>
+          {batches.length > 0 && <span className="badge bg-slate-100 text-slate-700">{batches.length} lote(s)</span>}
+        </div>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          {batches.map((batch) => <BatchCard key={batch.id} batch={batch} chargeCreationEnabled={chargeCreationEnabled} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}
+          {batches.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhuma prévia de lote foi criada nesta competência.</div>}
+        </div>
+      </section>
 
       <details className="mt-7 rounded-xl border border-slate-200 bg-white" open>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 font-extrabold">
