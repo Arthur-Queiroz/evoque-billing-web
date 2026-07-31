@@ -124,12 +124,24 @@ function money(value: number | null | undefined): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value ?? 0);
 }
 
+const suggestedDaysAfterClosing = 10;
+
 /// O fechamento e o vencimento são datas diferentes. No histórico do Asaas, um
 /// período que fecha no dia 25 vence por volta do dia 6 do mês seguinte, então
-/// dez dias depois do fechamento é um ponto de partida razoável — o operador
-/// ajusta antes de gerar a prévia.
+/// dez dias depois do fechamento é um ponto de partida razoável.
+///
+/// A sugestão nunca pode cair no passado. Faturar uma competência já encerrada
+/// é normal — em 31/07, o ciclo que fechou em 18/07 daria vencimento 28/07 — e
+/// sugerir uma data que o próprio sistema recusa obriga o operador a corrigir
+/// um valor que nós escolhemos mal. Nesse caso a contagem parte de hoje.
 function suggestDueDate(year: number, month: number, closingDay: number): string {
-  const suggestedDate = new Date(year, month - 1, closingDay + 10);
+  const closingDate = new Date(year, month - 1, closingDay);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const startingDate = closingDate < today ? today : closingDate;
+
+  const suggestedDate = new Date(startingDate);
+  suggestedDate.setDate(suggestedDate.getDate() + suggestedDaysAfterClosing);
   const suggestedMonth = String(suggestedDate.getMonth() + 1).padStart(2, "0");
   const suggestedDay = String(suggestedDate.getDate()).padStart(2, "0");
   return `${suggestedDate.getFullYear()}-${suggestedMonth}-${suggestedDay}`;
@@ -1388,7 +1400,7 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
             <label className="mt-3 block text-xs font-bold uppercase tracking-wide text-slate-500">Vencimento do boleto
               <input type="date" className="field mt-1.5 w-full" value={dueDate} onChange={(event) => onDueDateChange(event.target.value)} />
             </label>
-            <p className="mt-1.5 text-xs leading-5 text-slate-500">O vencimento é negociado à parte e normalmente cai no mês seguinte ao fechamento.</p>
+            <p className="mt-1.5 text-xs leading-5 text-slate-500">O vencimento é negociado à parte e normalmente cai no mês seguinte ao fechamento. Por quanto tempo o boleto continua pagável depois dessa data é definido na conta do Asaas, não aqui.</p>
             <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Ambiente</p><p className="mt-1 font-extrabold">{environment}</p></div>
             <button className="button-primary mt-4 w-full" disabled={companiesForSelectedDay.length === 0 || isSelectedDueDateInPast || isDueDateBeforeClosing} onClick={() => onCreatePreview(true)}><FileText size={17} />Gerar prévia do dia {String(selectedDay).padStart(2, "0")}</button>
             <p className={`mt-3 text-xs leading-5 ${isSelectedDueDateInPast || isDueDateBeforeClosing ? "font-semibold text-amber-700" : "text-slate-500"}`}>
