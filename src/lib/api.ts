@@ -77,7 +77,7 @@ export interface EvoCompany {
 
 export interface CompanySchedule {
   externalCompanyId: string;
-  billingDay: number;
+  closingDay: number;
   isActive: boolean;
   updatedBy: string;
   updatedAt: string;
@@ -224,7 +224,7 @@ export interface Company {
   lastSeenAt: string | null;
   seenInLastImport: boolean;
   requiresReviewAfterReappearing: boolean;
-  billingDay: number | null;
+  closingDay: number | null;
   hasActiveSchedule: boolean;
   asaasSandboxCustomerId: string | null;
   asaasProductionCustomerId: string | null;
@@ -329,8 +329,8 @@ export interface CompanyCatalogImportSummary {
 export interface CompanyFilters {
   search?: string;
   status?: "all" | "active" | "inactive";
-  billingDay?: number;
-  withoutBillingDay?: boolean;
+  closingDay?: number;
+  withoutClosingDay?: boolean;
   source?: CompanySource;
   seenInLastImport?: boolean;
   asaasLink?: "configured" | "pending";
@@ -338,7 +338,7 @@ export interface CompanyFilters {
 
 export interface SaveCompanyInput {
   displayName?: string | null;
-  billingDay: number | null;
+  closingDay: number | null;
   operatorId: string;
 }
 
@@ -422,11 +422,11 @@ function buildCompanyQuery(filters: CompanyFilters): string {
   if (filters.status && filters.status !== "all") {
     query.set("status", filters.status);
   }
-  if (filters.billingDay !== undefined) {
-    query.set("billingDay", String(filters.billingDay));
+  if (filters.closingDay !== undefined) {
+    query.set("closingDay", String(filters.closingDay));
   }
-  if (filters.withoutBillingDay) {
-    query.set("withoutBillingDay", "true");
+  if (filters.withoutClosingDay) {
+    query.set("withoutClosingDay", "true");
   }
   if (filters.source) {
     query.set("source", filters.source);
@@ -528,10 +528,10 @@ export const api = {
   getLatestCompanyCatalogImport: () =>
     requestOptional<CompanyCatalogImportSummary>("/api/company-catalog-imports/latest"),
   getCompanySchedules: () => request<CompanySchedule[]>("/api/company-billing-schedules"),
-  saveCompanySchedule: (externalCompanyId: string, billingDay: number, operatorId: string) =>
+  saveCompanySchedule: (externalCompanyId: string, closingDay: number, operatorId: string) =>
     request<CompanySchedule>(`/api/company-billing-schedules/${encodeURIComponent(externalCompanyId)}`, {
       method: "PUT",
-      body: JSON.stringify({ billingDay, isActive: true, operatorId }),
+      body: JSON.stringify({ closingDay, isActive: true, operatorId }),
     }),
   getBillingPeriods: () => request<BillingPeriod[]>("/api/billing-periods"),
   createBillingPeriod: (year: number, month: number, operatorId: string) =>
@@ -560,13 +560,14 @@ export const api = {
   createScheduledChargeBatchPreview: (
     year: number,
     month: number,
+    closingDay: number,
     dueDate: string,
     asaasEnvironment: AsaasEnvironment,
     operatorId: string,
   ) =>
     request<ChargeBatch>(`/api/billing-periods/${year}/${month}/scheduled-charge-batches/previews`, {
       method: "POST",
-      body: JSON.stringify({ dueDate, asaasEnvironment, operatorId }),
+      body: JSON.stringify({ closingDay, dueDate, asaasEnvironment, operatorId }),
     }),
   approveChargeBatch: (chargeBatchId: string, operatorId: string) =>
     request<ChargeBatch>(`/api/charge-batches/${chargeBatchId}/approve`, {

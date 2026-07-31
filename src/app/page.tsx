@@ -62,13 +62,13 @@ type Page =
   | "integrations";
 
 /** Filtros oferecidos na tela de empresas, na ordem em que aparecem. */
-type CompanyFilterKey = "all" | "active" | "inactive" | "withoutBillingDay" | "withoutAsaas";
+type CompanyFilterKey = "all" | "active" | "inactive" | "withoutClosingDay" | "withoutAsaas";
 
 const companyFilterOptions: Array<{ key: CompanyFilterKey; label: string }> = [
   { key: "all", label: "Todas" },
   { key: "active", label: "Ativas" },
   { key: "inactive", label: "Inativas" },
-  { key: "withoutBillingDay", label: "Sem dia" },
+  { key: "withoutClosingDay", label: "Sem dia" },
   { key: "withoutAsaas", label: "Sem Asaas" },
 ];
 
@@ -80,8 +80,8 @@ function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyF
 
   if (filterKey === "active" || filterKey === "inactive") {
     filters.status = filterKey;
-  } else if (filterKey === "withoutBillingDay") {
-    filters.withoutBillingDay = true;
+  } else if (filterKey === "withoutClosingDay") {
+    filters.withoutClosingDay = true;
   } else if (filterKey === "withoutAsaas") {
     filters.asaasLink = "pending";
   }
@@ -92,7 +92,7 @@ function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyF
 /** Campos editáveis de uma empresa, compartilhados por cadastro e edição. */
 interface CompanyFormValues {
   displayName: string;
-  billingDay: number | null;
+  closingDay: number | null;
 }
 
 function companySourceLabel(source: Company["source"]): string {
@@ -117,11 +117,22 @@ function registryStatusLabel(company: Company): string {
 }
 
 const operatorId = "operador-web";
-const billingDays = [2, 18, 20, 25];
+const closingDays = [2, 18, 20, 25];
 const controlledSandboxEmail = "arthurdequeiroz2005@gmail.com";
 
 function money(value: number | null | undefined): string {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value ?? 0);
+}
+
+/// O fechamento e o vencimento são datas diferentes. No histórico do Asaas, um
+/// período que fecha no dia 25 vence por volta do dia 6 do mês seguinte, então
+/// dez dias depois do fechamento é um ponto de partida razoável — o operador
+/// ajusta antes de gerar a prévia.
+function suggestDueDate(year: number, month: number, closingDay: number): string {
+  const suggestedDate = new Date(year, month - 1, closingDay + 10);
+  const suggestedMonth = String(suggestedDate.getMonth() + 1).padStart(2, "0");
+  const suggestedDay = String(suggestedDate.getDate()).padStart(2, "0");
+  return `${suggestedDate.getFullYear()}-${suggestedMonth}-${suggestedDay}`;
 }
 
 function fileSize(sizeInBytes: number): string {
@@ -136,17 +147,19 @@ function fileSize(sizeInBytes: number): string {
 
 const dateOnlyPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
 
-function date(value: string | null | undefined): string {
-  if (!value) return "—";
-
-  // Um vencimento como "2026-08-20" é um dia de calendário, não um instante.
-  // new Date() o interpretaria como meia-noite UTC e o fuso do Brasil o
-  // exibiria como o dia anterior, mostrando 19/08 na confirmação da emissão.
+// Um vencimento como "2026-08-20" é um dia de calendário, não um instante.
+// new Date() o interpretaria como meia-noite UTC e o fuso do Brasil o exibiria
+// como o dia anterior, mostrando 19/08 na confirmação da emissão.
+function parseDateOnly(value: string): Date {
   const dateOnlyParts = dateOnlyPattern.exec(value);
-  const parsedDate = dateOnlyParts
+  return dateOnlyParts
     ? new Date(Number(dateOnlyParts[1]), Number(dateOnlyParts[2]) - 1, Number(dateOnlyParts[3]))
     : new Date(value);
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(parsedDate);
+}
+
+function date(value: string | null | undefined): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short" }).format(parseDateOnly(value));
 }
 
 function monthLabel(year: number, month: number): string {
@@ -208,6 +221,11 @@ export default function BillingApplication() {
   const [environment, setEnvironment] = useState<AsaasEnvironment>("Sandbox");
   const [pendingEnvironment, setPendingEnvironment] = useState<AsaasEnvironment | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
+  // Conjuntos de dados que a última atualização não conseguiu carregar. Um
+  // número que não veio da API é exibido como "—", nunca como zero: "0 empresas"
+  // é uma afirmação, e afirmar que o catálogo está vazio quando ele tem 63
+  // manda o operador investigar o problema errado.
+  const [unavailableDataSets, setUnavailableDataSets] = useState<ReadonlySet<string>>(new Set());
   const [members, setMembers] = useState<EvoMember[]>([]);
   const [corporateCatalogMembers, setCorporateCatalogMembers] = useState<CorporateMember[]>([]);
   const [schedules, setSchedules] = useState<CompanySchedule[]>([]);
@@ -227,6 +245,7 @@ export default function BillingApplication() {
   const [latestCatalogImport, setLatestCatalogImport] = useState<CompanyCatalogImportSummary | null>(null);
   const [selectedCompanyTaxId, setSelectedCompanyTaxId] = useState<string | null>(null);
   const [scheduleDay, setScheduleDay] = useState("20");
+  const [dueDate, setDueDate] = useState("");
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
@@ -290,17 +309,22 @@ export default function BillingApplication() {
         setMembers(membersResult.value.members);
       }
 
-      const requiredFailures = [
-        statusResult,
-        schedulesResult,
-        periodsResult,
-        catalogResult,
-        billingResult,
-        corporateMembersResult,
-      ].filter((result) => result.status === "rejected");
+      const requiredResultsByDataSet = {
+        integrations: statusResult,
+        schedules: schedulesResult,
+        periods: periodsResult,
+        catalog: catalogResult,
+        billing: billingResult,
+        corporateMembers: corporateMembersResult,
+      };
+      const failedDataSets = Object.entries({ ...requiredResultsByDataSet, evoMembers: membersResult })
+        .filter(([, result]) => result.status === "rejected")
+        .map(([dataSet]) => dataSet);
+      setUnavailableDataSets(new Set(failedDataSets));
 
-      if (requiredFailures.length > 0) {
-        const firstFailure = requiredFailures[0] as PromiseRejectedResult;
+      const firstFailure = Object.values(requiredResultsByDataSet)
+        .find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
+      if (firstFailure) {
         setErrorMessage(
           firstFailure.reason instanceof Error
             ? firstFailure.reason.message
@@ -504,16 +528,26 @@ export default function BillingApplication() {
   }
 
   async function createBatchPreview(scheduled: boolean) {
-    const dueDate = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}-${String(Number(scheduleDay)).padStart(2, "0")}`;
+    // O fechamento define o ciclo; o vencimento é escolhido pelo operador e
+    // costuma cair no mês seguinte. Enquanto ele não escolher, sugerimos o
+    // padrão observado no Asaas: cerca de dez dias após o fechamento.
+    const resolvedDueDate = dueDate || suggestDueDate(selectedYear, selectedMonth, Number(scheduleDay));
     try {
       if (scheduled) {
-        await api.createScheduledChargeBatchPreview(selectedYear, selectedMonth, dueDate, environment, operatorId);
+        await api.createScheduledChargeBatchPreview(
+          selectedYear,
+          selectedMonth,
+          Number(scheduleDay),
+          resolvedDueDate,
+          environment,
+          operatorId,
+        );
       } else {
         if (selectedDraftIds.length === 0) {
           setErrorMessage("Selecione ao menos uma prévia aprovada.");
           return;
         }
-        await api.createChargeBatchPreview(selectedDraftIds, dueDate, environment, operatorId);
+        await api.createChargeBatchPreview(selectedDraftIds, resolvedDueDate, environment, operatorId);
       }
       setNoticeMessage("Prévia criada. Nenhuma cobrança foi enviada ao Asaas.");
       await refreshBillingData(selectedYear, selectedMonth);
@@ -595,7 +629,14 @@ export default function BillingApplication() {
           <div className="mx-auto max-w-[1440px] px-5 py-7 lg:px-8">
             {errorMessage && <Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout>}
             {noticeMessage && <Callout tone="success" onDismiss={() => setNoticeMessage(null)}>{noticeMessage}</Callout>}
-            {!selectedEnvironmentStatus?.isConfigured && (
+            {/* Só afirmamos que faltam credenciais quando a API respondeu e
+                disse isso. Sem resposta, o estado é desconhecido — dizer que a
+                integração está desconfigurada seria inventar um diagnóstico. */}
+            {integrationStatus === null ? (
+              <Callout tone="warning">
+                Não foi possível consultar o estado das integrações. Os dados abaixo podem estar incompletos; use o botão de atualizar.
+              </Callout>
+            ) : !selectedEnvironmentStatus?.isConfigured && (
               <Callout tone="warning">
                 O ambiente {environment} não possui credenciais configuradas na API. A interface continuará em modo de consulta.
               </Callout>
@@ -610,11 +651,13 @@ export default function BillingApplication() {
 
             {page === "overview" && (
               <Overview
-                activeDrafts={activeDrafts.length}
-                activeCatalogCompanies={activeCatalogCompanyCount}
+                activeDrafts={unavailableDataSets.has("billing") ? null : activeDrafts.length}
+                activeCatalogCompanies={unavailableDataSets.has("catalog") ? null : activeCatalogCompanyCount}
                 environment={environment}
-                memberValue={totalMemberValue}
-                members={corporateCatalogMembers.filter((member) => member.isActive).length}
+                memberValue={unavailableDataSets.has("evoMembers") ? null : totalMemberValue}
+                members={unavailableDataSets.has("corporateMembers")
+                  ? null
+                  : corporateCatalogMembers.filter((member) => member.isActive).length}
                 periodExists={Boolean(selectedPeriod)}
                 selectedYear={selectedYear}
                 selectedMonth={selectedMonth}
@@ -701,6 +744,8 @@ export default function BillingApplication() {
                 environment={environment}
                 hasPeriod={Boolean(selectedPeriod)}
                 scheduleDay={scheduleDay}
+                dueDate={dueDate || suggestDueDate(selectedYear, selectedMonth, Number(scheduleDay))}
+                onDueDateChange={setDueDate}
                 selectedMonth={selectedMonth}
                 selectedYear={selectedYear}
                 schedules={schedules}
@@ -827,8 +872,9 @@ function Header({ environment, isRefreshing, month, productionAvailable, year, o
   );
 }
 
+/** `null` em uma métrica significa "não carregou", que é diferente de zero. */
 function Overview({ activeDrafts, activeCatalogCompanies, environment, memberValue, members, periodExists, selectedYear, selectedMonth, onCreatePeriod, onNavigate }: {
-  activeDrafts: number; activeCatalogCompanies: number; environment: AsaasEnvironment; memberValue: number; members: number; periodExists: boolean; selectedYear: number; selectedMonth: number; onCreatePeriod: () => void; onNavigate: (page: Page) => void;
+  activeDrafts: number | null; activeCatalogCompanies: number | null; environment: AsaasEnvironment; memberValue: number | null; members: number | null; periodExists: boolean; selectedYear: number; selectedMonth: number; onCreatePeriod: () => void; onNavigate: (page: Page) => void;
 }) {
   return <section className="animate-[fade-in_180ms_ease-out]">
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
@@ -836,10 +882,10 @@ function Overview({ activeDrafts, activeCatalogCompanies, environment, memberVal
       {!periodExists && <button className="button-primary" onClick={onCreatePeriod}><Plus size={17} />Iniciar faturamento</button>}
     </div>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      <MetricCard icon={UsersRound} label="Colaboradores corporativos ativos" value={members.toString()} />
-      <MetricCard icon={Building2} label="Empresas ativas no catálogo" value={activeCatalogCompanies.toString()} />
-      <MetricCard icon={FileText} label="Prévias aprovadas" value={activeDrafts.toString()} tone="amber" />
-      <MetricCard icon={CircleDollarSign} label="Valor nas matrículas" value={money(memberValue)} tone="orange" />
+      <MetricCard icon={UsersRound} label="Colaboradores corporativos ativos" value={members === null ? "—" : members.toString()} />
+      <MetricCard icon={Building2} label="Empresas ativas no catálogo" value={activeCatalogCompanies === null ? "—" : activeCatalogCompanies.toString()} />
+      <MetricCard icon={FileText} label="Prévias aprovadas" value={activeDrafts === null ? "—" : activeDrafts.toString()} tone="amber" />
+      <MetricCard icon={CircleDollarSign} label="Valor nas matrículas" value={memberValue === null ? "—" : money(memberValue)} tone="orange" />
     </div>
     <div className="mt-7 grid gap-5 xl:grid-cols-[1.35fr_0.8fr]">
       <div className="panel p-5"><p className="text-base font-extrabold">O que você quer fazer?</p><p className="mt-1 text-sm text-slate-500">Fluxo seguro para a competência {monthLabel(selectedYear, selectedMonth)}.</p>
@@ -951,7 +997,7 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
               </td>
               <td className="px-5 py-4 text-slate-600">{company.formattedTaxId}</td>
               <td className="px-5 py-4 text-slate-600">{company.memberCount}</td>
-              <td className="px-5 py-4 font-extrabold">{company.billingDay ? String(company.billingDay).padStart(2, "0") : "—"}</td>
+              <td className="px-5 py-4 font-extrabold">{company.closingDay ? String(company.closingDay).padStart(2, "0") : "—"}</td>
               <td className="px-5 py-4 text-slate-600">{companyAsaasLabel(company)}</td>
               <td className="px-5 py-4 text-slate-600">{companySourceLabel(company.source)}</td>
               <td className="px-5 py-4">
@@ -1246,16 +1292,18 @@ function ImportMetric({ label, value }: { label: string; value: string }) {
   return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
 }
 
-function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, environment, hasPeriod, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onExecute, onNavigate, onScheduleDayChange, onToggleDraft }: {
-  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; drafts: BillingDraft[]; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
-  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onExecute: (batch: ChargeBatch) => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
+function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDate, environment, hasPeriod, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onNavigate, onScheduleDayChange, onToggleDraft }: {
+  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
+  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
 }) {
   const selectedDay = Number(scheduleDay);
-  const selectedDueDate = new Date(selectedYear, selectedMonth - 1, selectedDay);
+  const closingDate = new Date(selectedYear, selectedMonth - 1, selectedDay);
+  const selectedDueDate = parseDateOnly(dueDate);
   const currentDate = new Date();
   currentDate.setHours(0, 0, 0, 0);
   const isSelectedDueDateInPast = selectedDueDate < currentDate;
-  const activeSchedulesForDay = schedules.filter((schedule) => schedule.isActive && schedule.billingDay === selectedDay);
+  const isDueDateBeforeClosing = selectedDueDate < closingDate;
+  const activeSchedulesForDay = schedules.filter((schedule) => schedule.isActive && schedule.closingDay === selectedDay);
   const batchesForSelectedDay = batches.filter((batch) => Number(batch.dueDate.slice(8, 10)) === selectedDay);
   // A agenda guarda o CNPJ normalizado, que é a identidade da empresa no
   // catálogo. Empresas inativas não entram no lote e não são listadas aqui.
@@ -1271,8 +1319,8 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, enviro
     </div>
 
     <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {billingDays.map((day) => {
-        const companiesOnDay = schedules.filter((schedule) => schedule.isActive && schedule.billingDay === day).length;
+      {closingDays.map((day) => {
+        const companiesOnDay = schedules.filter((schedule) => schedule.isActive && schedule.closingDay === day).length;
         const isSelected = day === selectedDay;
         return <button key={day} className={`group rounded-xl border p-5 text-left transition focus:outline-none focus:ring-2 focus:ring-orange/30 ${isSelected ? "border-charcoal bg-charcoal text-white shadow-lg shadow-slate-900/10" : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-orange/50 hover:shadow-md"}`} onClick={() => onScheduleDayChange(String(day))}>
           <div className="flex items-start justify-between"><span className={`text-xs font-extrabold uppercase tracking-[0.16em] ${isSelected ? "text-orange-200" : "text-slate-500"}`}>Dia</span>{isSelected && <CalendarCheck2 size={19} className="text-orange" />}</div>
@@ -1284,12 +1332,32 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, enviro
 
     {!hasPeriod ? <div className="panel mt-7 flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-extrabold">O faturamento deste mês ainda não foi iniciado</p><p className="mt-1 text-sm text-slate-500">Inicie o faturamento para preparar prévias e lotes. Nenhuma cobrança será criada no Asaas nesta etapa.</p></div><button className="button-primary shrink-0" onClick={onCreatePeriod}><Plus size={17} />Iniciar faturamento de {monthLabel(selectedYear, selectedMonth)}</button></div> : <>
       <section className="mt-7 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 bg-slate-50/70 px-6 py-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange/10 text-orange"><CalendarDays size={21} /></div><div><p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">Vencimento selecionado</p><h2 className="mt-0.5 text-xl font-extrabold">Dia {String(selectedDay).padStart(2, "0")}</h2></div></div><p className="text-sm text-slate-500">{companiesForSelectedDay.length} empresa(s) ativa(s) na agenda</p></div></div>
+        <div className="border-b border-slate-200 bg-slate-50/70 px-6 py-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange/10 text-orange"><CalendarDays size={21} /></div><div><p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">Fechamento selecionado</p><h2 className="mt-0.5 text-xl font-extrabold">Dia {String(selectedDay).padStart(2, "0")}</h2></div></div><p className="text-sm text-slate-500">{companiesForSelectedDay.length} empresa(s) ativa(s) na agenda</p></div></div>
         <div className="grid gap-5 p-6 xl:grid-cols-[1fr_330px]">
           <div>
-            {companiesForSelectedDay.length === 0 ? <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center"><Building2 className="mx-auto text-slate-400" size={26} /><p className="mt-3 font-extrabold">Nenhuma empresa ativa está pronta para este dia</p><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">Abra o catálogo de empresas e defina o dia de cobrança de uma empresa ativa antes de gerar uma prévia.</p><button className="button-secondary mt-5" onClick={() => onNavigate("companies")}>Abrir catálogo de empresas</button></div> : <><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="font-extrabold">Empresas do ciclo</p><p className="mt-1 text-sm text-slate-500">A lista usa o catálogo interno e os vencimentos salvos no faturamento.</p></div><span className="badge bg-slate-100 text-slate-700">{companiesForSelectedDay.length} empresa(s) ativa(s)</span></div><div className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">{companiesForSelectedDay.map((company) => <div key={company.taxId} className="flex items-center justify-between gap-4 px-4 py-3.5"><div><p className="font-bold">{company.displayName}</p><p className="mt-0.5 text-xs text-slate-500">{company.formattedTaxId} · {companyAsaasLabel(company)}</p></div><span className="text-xs font-extrabold text-slate-500">Dia {String(company.billingDay ?? selectedDay).padStart(2, "0")}</span></div>)}</div></>}
+            {companiesForSelectedDay.length === 0 ? <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center"><Building2 className="mx-auto text-slate-400" size={26} /><p className="mt-3 font-extrabold">Nenhuma empresa ativa está pronta para este dia</p><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">Abra o catálogo de empresas e defina o dia de fechamento de uma empresa ativa antes de gerar uma prévia.</p><button className="button-secondary mt-5" onClick={() => onNavigate("companies")}>Abrir catálogo de empresas</button></div> : <><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="font-extrabold">Empresas do ciclo</p><p className="mt-1 text-sm text-slate-500">A lista usa o catálogo interno e os vencimentos salvos no faturamento.</p></div><span className="badge bg-slate-100 text-slate-700">{companiesForSelectedDay.length} empresa(s) ativa(s)</span></div><div className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200">{companiesForSelectedDay.map((company) => <div key={company.taxId} className="flex items-center justify-between gap-4 px-4 py-3.5"><div><p className="font-bold">{company.displayName}</p><p className="mt-0.5 text-xs text-slate-500">{company.formattedTaxId} · {companyAsaasLabel(company)}</p></div><span className="text-xs font-extrabold text-slate-500">Dia {String(company.closingDay ?? selectedDay).padStart(2, "0")}</span></div>)}</div></>}
           </div>
-          <aside className="rounded-xl border border-slate-200 bg-slate-50 p-5"><div className="flex items-center gap-2"><ReceiptText size={18} className="text-orange" /><p className="font-extrabold">Gerar prévia do ciclo</p></div><p className="mt-2 text-sm leading-6 text-slate-500">A prévia calcula o lote e não cria cobranças no Asaas.</p><div className="mt-5 rounded-lg border border-slate-200 bg-white p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Ambiente</p><p className="mt-1 font-extrabold">{environment}</p></div><button className="button-primary mt-4 w-full" disabled={companiesForSelectedDay.length === 0 || isSelectedDueDateInPast} onClick={() => onCreatePreview(true)}><FileText size={17} />Gerar prévia do dia {String(selectedDay).padStart(2, "0")}</button><p className={`mt-3 text-xs leading-5 ${isSelectedDueDateInPast ? "font-semibold text-amber-700" : "text-slate-500"}`}>{isSelectedDueDateInPast ? `O vencimento ${String(selectedDay).padStart(2, "0")}/${String(selectedMonth).padStart(2, "0")}/${selectedYear} já passou. Selecione uma competência futura.` : "Após criar, revise e aprove o lote antes de qualquer emissão."}</p></aside>
+          <aside className="rounded-xl border border-slate-200 bg-slate-50 p-5">
+            <div className="flex items-center gap-2"><ReceiptText size={18} className="text-orange" /><p className="font-extrabold">Gerar prévia do ciclo</p></div>
+            <p className="mt-2 text-sm leading-6 text-slate-500">A prévia calcula o lote e não cria cobranças no Asaas.</p>
+            <div className="mt-5 rounded-lg border border-slate-200 bg-white p-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Fechamento do período</p>
+              <p className="mt-1 font-extrabold">Dia {String(selectedDay).padStart(2, "0")} · {monthLabel(selectedYear, selectedMonth)}</p>
+            </div>
+            <label className="mt-3 block text-xs font-bold uppercase tracking-wide text-slate-500">Vencimento do boleto
+              <input type="date" className="field mt-1.5 w-full" value={dueDate} onChange={(event) => onDueDateChange(event.target.value)} />
+            </label>
+            <p className="mt-1.5 text-xs leading-5 text-slate-500">O vencimento é negociado à parte e normalmente cai no mês seguinte ao fechamento.</p>
+            <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Ambiente</p><p className="mt-1 font-extrabold">{environment}</p></div>
+            <button className="button-primary mt-4 w-full" disabled={companiesForSelectedDay.length === 0 || isSelectedDueDateInPast || isDueDateBeforeClosing} onClick={() => onCreatePreview(true)}><FileText size={17} />Gerar prévia do dia {String(selectedDay).padStart(2, "0")}</button>
+            <p className={`mt-3 text-xs leading-5 ${isSelectedDueDateInPast || isDueDateBeforeClosing ? "font-semibold text-amber-700" : "text-slate-500"}`}>
+              {isSelectedDueDateInPast
+                ? `O vencimento ${date(dueDate)} já passou. Escolha uma data futura.`
+                : isDueDateBeforeClosing
+                  ? `O vencimento ${date(dueDate)} é anterior ao fechamento ${String(selectedDay).padStart(2, "0")}/${String(selectedMonth).padStart(2, "0")}/${selectedYear}.`
+                  : "Após criar, revise e aprove o lote antes de qualquer emissão."}
+            </p>
+          </aside>
         </div>
       </section>
 
@@ -1549,7 +1617,7 @@ function CompanyDetailPage({
   productionSynchronizationAvailable: boolean;
 }) {
   const [displayName, setDisplayName] = useState(company.displayName);
-  const [billingDay, setBillingDay] = useState(company.billingDay ? String(company.billingDay) : "");
+  const [closingDay, setBillingDay] = useState(company.closingDay ? String(company.closingDay) : "");
   const [sandboxEmail, setSandboxEmail] = useState(controlledSandboxEmail);
   const [isSynchronizingSandbox, setIsSynchronizingSandbox] = useState(false);
   const [isSynchronizingProduction, setIsSynchronizingProduction] = useState(false);
@@ -1559,7 +1627,7 @@ function CompanyDetailPage({
 
   useEffect(() => {
     setDisplayName(company.displayName);
-    setBillingDay(company.billingDay ? String(company.billingDay) : "");
+    setBillingDay(company.closingDay ? String(company.closingDay) : "");
   }, [company]);
 
   useEffect(() => {
@@ -1680,17 +1748,17 @@ function CompanyDetailPage({
               event.preventDefault();
               onSave({
                 displayName,
-                billingDay: billingDay ? Number(billingDay) : null,
+                closingDay: closingDay ? Number(closingDay) : null,
               });
             }}
           >
             <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional
               <input className="field mt-1.5 w-full" required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
             </label>
-            <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
-              <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
+            <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de fechamento
+              <select className="field mt-1.5 w-full" value={closingDay} onChange={(event) => setBillingDay(event.target.value)}>
                 <option value="">Sem dia definido</option>
-                {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
+                {closingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
               </select>
             </label>
             <button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar dados</button>
@@ -1770,7 +1838,7 @@ function CompanyFact({ label, value }: { label: string; value: string | null }) 
 function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (taxId: string, values: CompanyFormValues) => void }) {
   const [taxId, setTaxId] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [billingDay, setBillingDay] = useState("");
+  const [closingDay, setBillingDay] = useState("");
 
   return <section className="max-w-[640px] animate-[fade-in_180ms_ease-out]">
     <button className="mb-4 inline-flex items-center gap-1 text-sm font-bold text-slate-500 hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Empresas</button>
@@ -1781,7 +1849,7 @@ function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (
         event.preventDefault();
         onCreate(taxId, {
           displayName,
-          billingDay: billingDay ? Number(billingDay) : null,
+          closingDay: closingDay ? Number(closingDay) : null,
         });
       }}
     >
@@ -1791,10 +1859,10 @@ function CompanyFormPage({ onBack, onCreate }: { onBack: () => void; onCreate: (
       <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Nome operacional <span className="normal-case font-semibold text-slate-400">· opcional</span>
         <input className="field mt-1.5 w-full" placeholder="Se vazio, usaremos o nome da BrasilAPI" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
       </label>
-      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de cobrança
-        <select className="field mt-1.5 w-full" value={billingDay} onChange={(event) => setBillingDay(event.target.value)}>
+      <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Dia de fechamento
+        <select className="field mt-1.5 w-full" value={closingDay} onChange={(event) => setBillingDay(event.target.value)}>
           <option value="">Sem dia definido</option>
-          {billingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
+          {closingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
         </select>
       </label>
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
@@ -1868,7 +1936,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
     <PageHeading title="Atualizar empresas e colaboradores" description="Compare a exportação completa de clientes ativos do EVO com a base persistente antes de confirmar." />
 
     <Callout tone="warning">
-      Empresas já cadastradas não terão nome, dia de cobrança ou situação alterados. Os colaboradores serão comparados pelo IdCliente do EVO.
+      Esta importação não cadastra empresa. Ela apenas vincula colaboradores às empresas já cadastradas, comparando pelo IdCliente do EVO. Um CNPJ fora do catálogo é listado como pendência.
     </Callout>
 
     {importError && <Callout tone="error" onDismiss={() => setImportError(null)}>{importError}</Callout>}
