@@ -26,7 +26,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   api,
@@ -246,6 +246,7 @@ export default function BillingApplication() {
   const [selectedCompanyTaxId, setSelectedCompanyTaxId] = useState<string | null>(null);
   const [scheduleDay, setScheduleDay] = useState("20");
   const [dueDate, setDueDate] = useState("");
+  const messageAreaRef = useRef<HTMLDivElement>(null);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
@@ -388,6 +389,17 @@ export default function BillingApplication() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMonth, selectedYear]);
 
+  // As mensagens ficam no topo, e vários botões estão bem abaixo na rolagem.
+  // Sem isto, uma ação recusada pela API parece não ter feito nada: o operador
+  // clica em "Gerar prévia", a resposta chega, e ele continua olhando o botão.
+  useEffect(() => {
+    if (!errorMessage && !noticeMessage) {
+      return;
+    }
+
+    messageAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [errorMessage, noticeMessage]);
+
   function selectEnvironment(targetEnvironment: AsaasEnvironment) {
     if (targetEnvironment === environment) {
       return;
@@ -528,6 +540,10 @@ export default function BillingApplication() {
   }
 
   async function createBatchPreview(scheduled: boolean) {
+    // Limpar antes de agir garante que repetir a ação com o mesmo resultado
+    // volte a mudar o estado e a rolar a mensagem para a vista.
+    setErrorMessage(null);
+    setNoticeMessage(null);
     // O fechamento define o ciclo; o vencimento é escolhido pelo operador e
     // costuma cair no mês seguinte. Enquanto ele não escolher, sugerimos o
     // padrão observado no Asaas: cerca de dez dias após o fechamento.
@@ -627,8 +643,10 @@ export default function BillingApplication() {
             onYearChange={setSelectedYear}
           />
           <div className="mx-auto max-w-[1440px] px-5 py-7 lg:px-8">
-            {errorMessage && <Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout>}
-            {noticeMessage && <Callout tone="success" onDismiss={() => setNoticeMessage(null)}>{noticeMessage}</Callout>}
+            <div ref={messageAreaRef}>
+              {errorMessage && <Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout>}
+              {noticeMessage && <Callout tone="success" onDismiss={() => setNoticeMessage(null)}>{noticeMessage}</Callout>}
+            </div>
             {/* Só afirmamos que faltam credenciais quando a API respondeu e
                 disse isso. Sem resposta, o estado é desconhecido — dizer que a
                 integração está desconfigurada seria inventar um diagnóstico. */}
