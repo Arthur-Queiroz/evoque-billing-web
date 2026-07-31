@@ -1342,6 +1342,10 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
   // fechamento, e filtrar por `dueDate.getDate()` escondia todo lote cujo
   // vencimento não caísse exatamente em 02, 18, 20 ou 25 — ou seja, todos.
   // O operador ficava sem acesso ao botão de aprovar de um lote existente.
+  const openBatches = batches.filter((batch) =>
+    batch.status === "AwaitingApproval" || batch.status === "Approved" || batch.status === "Processing");
+  const settledBatches = batches.filter((batch) =>
+    batch.status === "Completed" || batch.status === "CompletedWithErrors");
   // A agenda guarda o CNPJ normalizado, que é a identidade da empresa no
   // catálogo. Empresas inativas não entram no lote e não são listadas aqui.
   const companiesForSelectedDay = activeSchedulesForDay
@@ -1404,12 +1408,26 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
             <p className="text-lg font-extrabold">Lotes de {monthLabel(selectedYear, selectedMonth)}</p>
             <p className="mt-1 text-sm text-slate-500">Acompanhe revisão, aprovação e execução. O lote guarda o vencimento, não o dia de fechamento.</p>
           </div>
-          {batches.length > 0 && <span className="badge bg-slate-100 text-slate-700">{batches.length} lote(s)</span>}
+          {openBatches.length > 0 && <span className="badge bg-slate-100 text-slate-700">{openBatches.length} em aberto</span>}
         </div>
         <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          {batches.map((batch) => <BatchCard key={batch.id} batch={batch} chargeCreationEnabled={chargeCreationEnabled} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}
-          {batches.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhuma prévia de lote foi criada nesta competência.</div>}
+          {openBatches.map((batch) => <BatchCard key={batch.id} batch={batch} chargeCreationEnabled={chargeCreationEnabled} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}
+          {openBatches.length === 0 && <div className="panel p-7 text-center text-sm text-slate-500">Nenhum lote em aberto nesta competência.</div>}
         </div>
+        {/* Um lote concluído não faz mais nada, mas continua sendo o registro de
+            uma tentativa de emissão. Ele sai da lista principal e permanece
+            acessível: esconder de vez faria a tela contar uma história
+            diferente da auditoria. */}
+        {settledBatches.length > 0 && (
+          <details className="mt-3 rounded-xl border border-slate-200 bg-white">
+            <summary className="cursor-pointer list-none p-4 text-sm font-extrabold text-slate-600">
+              Mostrar {settledBatches.length} lote(s) concluído(s)
+            </summary>
+            <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-2">
+              {settledBatches.map((batch) => <BatchCard key={batch.id} batch={batch} chargeCreationEnabled={chargeCreationEnabled} onApprove={() => onApprove(batch)} onExecute={() => onExecute(batch)} />)}
+            </div>
+          </details>
+        )}
       </section>
 
       <details className="mt-7 rounded-xl border border-slate-200 bg-white" open>
