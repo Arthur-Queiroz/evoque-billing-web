@@ -10,8 +10,13 @@
 ## Faturamento por empresa e por ciclo
 
 O usuário pode preparar cobrança para uma empresa específica ou para todas as
-empresas com agenda ativa no dia escolhido. Os únicos dias recorrentes aceitos
-são `02`, `18`, `20` e `25`.
+empresas cujo período **fecha** no dia escolhido. Os únicos dias de fechamento
+aceitos são `02`, `18`, `20` e `25`.
+
+Fechamento e vencimento são campos distintos na tela e não podem voltar a ser
+o mesmo. O dia escolhido nos cards seleciona o ciclo; o vencimento do boleto é
+uma data à parte, normalmente no mês seguinte, sugerida em fechamento + 10 dias
+e editável pelo operador. Nenhum vencimento real cai em 02, 18, 20 ou 25.
 
 O fluxo mostrado deve respeitar:
 
@@ -52,8 +57,9 @@ Regras visíveis:
 - A tela explica que valores financeiros não são usados nessa importação.
 - A inclusão exige confirmação explícita de que o arquivo contém todos os
   clientes ativos. Arquivo parcial não pode ser aplicado.
-- Somente CNPJs inexistentes são cadastrados. Empresas existentes são ignoradas
-  quanto a nome, dia, situação e vínculos.
+- **Nenhuma empresa é cadastrada por esta importação.** Ela apenas vincula
+  colaboradores a empresas já existentes; CNPJ fora do catálogo é listado como
+  pendência para alguém decidir se é cliente.
 - Colaboradores novos são incluídos; presentes permanecem ativos; ausentes são
   inativados; quem reaparece na mesma empresa é reativado.
 - Se o mesmo `IdCliente` aparecer em outro CNPJ, mostrar conflito e bloquear a
