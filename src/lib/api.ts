@@ -5,6 +5,8 @@ export interface IntegrationEnvironmentStatus {
   isConfigured: boolean;
   readOperationsEnabled: boolean;
   chargeCreationEnabled: boolean;
+  /** Emissão de nota fiscal. Desligada por padrão, independente da cobrança. */
+  invoiceIssuanceEnabled: boolean;
 }
 
 export interface IntegrationStatus {
@@ -138,6 +140,28 @@ export interface ChargeBatch {
   createdAt: string;
   updatedAt: string;
   items: ChargeBatchItem[];
+}
+
+/**
+ * Nota fiscal de serviço emitida junto da cobrança. `status` espelha o estado
+ * no Asaas; `errorMessage` traz o motivo da prefeitura na íntegra, que é o
+ * texto que diz o que corrigir.
+ */
+export interface FiscalInvoice {
+  id: string;
+  billingDraftId: string;
+  billingPeriodId: string;
+  sequence: number;
+  asaasPaymentId: string;
+  asaasInvoiceId: string | null;
+  status: string;
+  totalAmount: number;
+  effectiveDate: string;
+  retainsIss: boolean;
+  serviceDescription: string;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AsaasCustomer {
@@ -576,6 +600,18 @@ export const api = {
     }),
   executeChargeBatch: (chargeBatchId: string, operatorId: string) =>
     request<ChargeBatch>(`/api/charge-batches/${chargeBatchId}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ operatorId, confirmationPhrase: "CONFIRMAR" }),
+    }),
+  getFiscalInvoices: (year: number, month: number) =>
+    request<FiscalInvoice[]>(`/api/billing-periods/${year}/${month}/fiscal-invoices`),
+  synchronizeFiscalInvoices: (year: number, month: number, operatorId: string) =>
+    request<FiscalInvoice[]>(`/api/billing-periods/${year}/${month}/fiscal-invoices/synchronize`, {
+      method: "POST",
+      body: JSON.stringify({ operatorId }),
+    }),
+  reissueFiscalInvoice: (fiscalInvoiceId: string, operatorId: string) =>
+    request<FiscalInvoice>(`/api/fiscal-invoices/${fiscalInvoiceId}/reissue`, {
       method: "POST",
       body: JSON.stringify({ operatorId, confirmationPhrase: "CONFIRMAR" }),
     }),

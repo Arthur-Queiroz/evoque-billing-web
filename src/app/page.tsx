@@ -47,6 +47,7 @@ import {
   EvoMembership,
   IntegrationStatus,
   BillingSpreadsheetPreview,
+  FiscalInvoice,
 } from "@/lib/api";
 
 type Page =
@@ -59,6 +60,7 @@ type Page =
   | "charges"
   | "spreadsheetImport"
   | "dailyBilling"
+  | "fiscalInvoices"
   | "integrations";
 
 /** Filtros oferecidos na tela de empresas, na ordem em que aparecem. */
@@ -118,6 +120,19 @@ function registryStatusLabel(company: Company): string {
 
 const operatorId = "operador-web";
 const closingDays = [2, 18, 20, 25];
+
+/// "Sandbox" e "Production" são nomes da API do Asaas e não dizem nada a quem
+/// opera o faturamento. O que a pessoa precisa saber antes de clicar é se
+/// alguém vai ser cobrado de verdade.
+function environmentLabel(environment: AsaasEnvironment): string {
+  return environment === "Sandbox" ? "Teste" : "Real";
+}
+
+function environmentDescription(environment: AsaasEnvironment): string {
+  return environment === "Sandbox"
+    ? "Teste · ninguém é cobrado"
+    : "Real · cobra o cliente";
+}
 const controlledSandboxEmail = "arthurdequeiroz2005@gmail.com";
 
 function money(value: number | null | undefined): string {
@@ -263,6 +278,8 @@ export default function BillingApplication() {
   // não muda o texto, e sem este contador a rolagem não voltaria a acontecer:
   // o operador clicaria de novo e teria a impressão de que nada respondeu.
   const [shownMessageCount, setShownMessageCount] = useState(0);
+  const [fiscalInvoices, setFiscalInvoices] = useState<FiscalInvoice[]>([]);
+  const [isSynchronizingInvoices, setIsSynchronizingInvoices] = useState(false);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
@@ -398,15 +415,23 @@ export default function BillingApplication() {
 
   async function refreshBillingData(year: number, month: number) {
     try {
-      const [draftData, batchData] = await Promise.all([api.getBillingDrafts(year, month), api.getChargeBatches(year, month)]);
+      const [draftData, batchData, invoiceData] = await Promise.all([
+        api.getBillingDrafts(year, month),
+        api.getChargeBatches(year, month),
+        // A lista de notas não pode derrubar a competência inteira: uma API
+        // antiga, sem o endpoint fiscal, deixaria prévias e lotes invisíveis.
+        api.getFiscalInvoices(year, month).catch(() => [] as FiscalInvoice[]),
+      ]);
       setDrafts(draftData);
       setBatches(batchData);
+      setFiscalInvoices(invoiceData);
       setSelectedDraftIds((currentIds) => currentIds.filter((draftId) => draftData.some((draft) => draft.id === draftId)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Não foi possível carregar os faturamentos da competência.";
       if (!message.includes("404") && !message.includes("não foi encontrada")) showError(message);
       setDrafts([]);
       setBatches([]);
+      setFiscalInvoices([]);
     }
   }
 
@@ -625,17 +650,42 @@ export default function BillingApplication() {
     if (!selectedEnvironmentStatus?.chargeCreationEnabled) {
       setConfirmationBatch(null);
       setConfirmationText("");
-      showError(`A emissão de cobranças no ambiente ${environment} está bloqueada.`);
+      showError(`A emissão de cobranças no ambiente ${environmentLabel(environment)} está bloqueada.`);
       return;
     }
     try {
       await api.executeChargeBatch(confirmationBatch.id, operatorId);
       setConfirmationBatch(null);
       setConfirmationText("");
-      showNotice(`Lote executado no ambiente ${environment}.`);
+      showNotice(`Lote executado no ambiente ${environmentLabel(environment)}.`);
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
       showError(error instanceof Error ? error.message : "Não foi possível executar o lote.");
+    }
+  }
+
+  async function synchronizeFiscalInvoices() {
+    if (isSynchronizingInvoices) return;
+
+    setIsSynchronizingInvoices(true);
+    try {
+      const updatedInvoices = await api.synchronizeFiscalInvoices(selectedYear, selectedMonth, operatorId);
+      setFiscalInvoices(updatedInvoices);
+      showNotice("Situação das notas atualizada junto ao Asaas.");
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível consultar as notas no Asaas.");
+    } finally {
+      setIsSynchronizingInvoices(false);
+    }
+  }
+
+  async function reissueFiscalInvoice(fiscalInvoice: FiscalInvoice) {
+    try {
+      await api.reissueFiscalInvoice(fiscalInvoice.id, operatorId);
+      showNotice("Nova nota solicitada ao Asaas. Atualize a situação em seguida para ver o desfecho.");
+      await refreshBillingData(selectedYear, selectedMonth);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível reemitir a nota fiscal.");
     }
   }
 
@@ -684,7 +734,7 @@ export default function BillingApplication() {
               </Callout>
             ) : !selectedEnvironmentStatus?.isConfigured && (
               <Callout tone="warning">
-                O ambiente {environment} não possui credenciais configuradas na API. A interface continuará em modo de consulta.
+                O ambiente {environmentLabel(environment)} não possui credenciais configuradas na API. A interface continuará em modo de consulta.
               </Callout>
             )}
             {environment === "Production"
@@ -700,6 +750,7 @@ export default function BillingApplication() {
                 activeDrafts={unavailableDataSets.has("billing") ? null : activeDrafts.length}
                 activeCatalogCompanies={unavailableDataSets.has("catalog") ? null : activeCatalogCompanyCount}
                 environment={environment}
+                fiscalInvoices={unavailableDataSets.has("billing") ? null : fiscalInvoices}
                 memberValue={unavailableDataSets.has("evoMembers") ? null : totalMemberValue}
                 members={unavailableDataSets.has("corporateMembers")
                   ? null
@@ -807,6 +858,21 @@ export default function BillingApplication() {
                 onToggleDraft={(draftId) => setSelectedDraftIds((currentIds) => currentIds.includes(draftId) ? currentIds.filter((id) => id !== draftId) : [...currentIds, draftId])}
               />
             )}
+            {page === "fiscalInvoices" && (
+              <FiscalInvoicesPage
+                fiscalInvoices={fiscalInvoices}
+                drafts={drafts}
+                environment={environment}
+                hasPeriod={Boolean(selectedPeriod)}
+                invoiceIssuanceEnabled={selectedEnvironmentStatus?.invoiceIssuanceEnabled ?? false}
+                isSynchronizing={isSynchronizingInvoices}
+                selectedMonth={selectedMonth}
+                selectedYear={selectedYear}
+                onNavigate={setPage}
+                onReissue={(fiscalInvoice) => void reissueFiscalInvoice(fiscalInvoice)}
+                onSynchronize={() => void synchronizeFiscalInvoices()}
+              />
+            )}
             {page === "integrations" && <IntegrationsPage status={integrationStatus} activeCatalogCompanyCount={activeCatalogCompanyCount} latestImport={latestCatalogImport} onOpenCatalog={() => setPage("companies")} onImportCatalog={() => setPage("companyCatalogImport")} />}
           </div>
         </div>
@@ -845,6 +911,7 @@ function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }
     { page: "members", label: "Colaboradores", icon: UsersRound },
     { page: "companies", label: "Empresas", icon: Building2 },
     { page: "charges", label: "Cobranças", icon: CreditCard },
+    { page: "fiscalInvoices", label: "Notas fiscais", icon: ReceiptText },
     { page: "integrations", label: "Integrações", icon: Wifi },
   ];
 
@@ -872,7 +939,7 @@ function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }
         })}
       </nav>
       <div className="mt-auto rounded-lg border border-amber-600/30 bg-amber-500/10 p-3">
-        <p className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-amber-300"><span className="h-2 w-2 rounded-full bg-amber-300" />Asaas · {environment}</p>
+        <p className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-wide text-amber-300"><span className="h-2 w-2 rounded-full bg-amber-300" />Asaas · {environmentDescription(environment)}</p>
         <p className="mt-1 text-[11px] leading-4 text-zinc-400">
           {environment === "Sandbox"
             ? "Ambiente de testes — cobranças não são reais."
@@ -919,9 +986,12 @@ function Header({ environment, isRefreshing, month, productionAvailable, year, o
 }
 
 /** `null` em uma métrica significa "não carregou", que é diferente de zero. */
-function Overview({ activeDrafts, activeCatalogCompanies, environment, memberValue, members, periodExists, selectedYear, selectedMonth, onCreatePeriod, onNavigate }: {
-  activeDrafts: number | null; activeCatalogCompanies: number | null; environment: AsaasEnvironment; memberValue: number | null; members: number | null; periodExists: boolean; selectedYear: number; selectedMonth: number; onCreatePeriod: () => void; onNavigate: (page: Page) => void;
+function Overview({ activeDrafts, activeCatalogCompanies, environment, fiscalInvoices, memberValue, members, periodExists, selectedYear, selectedMonth, onCreatePeriod, onNavigate }: {
+  activeDrafts: number | null; activeCatalogCompanies: number | null; environment: AsaasEnvironment; fiscalInvoices: FiscalInvoice[] | null; memberValue: number | null; members: number | null; periodExists: boolean; selectedYear: number; selectedMonth: number; onCreatePeriod: () => void; onNavigate: (page: Page) => void;
 }) {
+  const authorizedInvoices = fiscalInvoices?.filter((invoice) => invoice.status === "Authorized").length ?? null;
+  const refusedInvoices = fiscalInvoices?.filter((invoice) => invoice.status === "Failed").length ?? null;
+
   return <section className="animate-[fade-in_180ms_ease-out]">
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4">
       <div><p className="text-2xl font-extrabold tracking-tight">Visão geral</p><p className="mt-1 text-sm text-slate-500">Consulte dados do Evo e prepare cobranças no Asaas.</p></div>
@@ -933,6 +1003,20 @@ function Overview({ activeDrafts, activeCatalogCompanies, environment, memberVal
       <MetricCard icon={FileText} label="Prévias aprovadas" value={activeDrafts === null ? "—" : activeDrafts.toString()} tone="amber" />
       <MetricCard icon={CircleDollarSign} label="Valor nas matrículas" value={memberValue === null ? "—" : money(memberValue)} tone="orange" />
     </div>
+    {/* A pergunta que a diretoria faz é "o fiscal está em dia?". Sem estes dois
+        números ela só se responde abrindo o painel do Asaas empresa por
+        empresa — foi assim que notas recusadas passaram meses sem ninguém ver. */}
+    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <MetricCard icon={ReceiptText} label="Notas emitidas na competência" value={authorizedInvoices === null ? "—" : authorizedInvoices.toString()} />
+      <button className="text-left" onClick={() => onNavigate("fiscalInvoices")}>
+        <MetricCard
+          icon={CircleAlert}
+          label={refusedInvoices ? "Notas recusadas · abrir para corrigir" : "Notas recusadas"}
+          value={refusedInvoices === null ? "—" : refusedInvoices.toString()}
+          tone={refusedInvoices ? "orange" : "slate"}
+        />
+      </button>
+    </div>
     <div className="mt-7 grid gap-5 xl:grid-cols-[1.35fr_0.8fr]">
       <div className="panel p-5"><p className="text-base font-extrabold">O que você quer fazer?</p><p className="mt-1 text-sm text-slate-500">Fluxo seguro para a competência {monthLabel(selectedYear, selectedMonth)}.</p>
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -941,7 +1025,7 @@ function Overview({ activeDrafts, activeCatalogCompanies, environment, memberVal
           <ActionCard dark icon={CalendarDays} title="Faturamento do dia" description="Criar uma prévia de lote para 02, 18, 20 ou 25." onClick={() => onNavigate("dailyBilling")} />
         </div>
       </div>
-      <div className="panel p-5"><div className="flex items-center justify-between"><p className="text-base font-extrabold">Ambiente atual</p><span className={`badge ${environment === "Sandbox" ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{environment}</span></div>
+      <div className="panel p-5"><div className="flex items-center justify-between"><p className="text-base font-extrabold">Ambiente atual</p><span className={`badge ${environment === "Sandbox" ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"}`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{environmentDescription(environment)}</span></div>
         <p className="mt-4 text-sm leading-6 text-slate-600">{environment === "Sandbox" ? "Use o Sandbox para validar as prévias, o boleto e a notificação sem cobrar clientes reais." : "Produção exige aprovação e confirmação textual antes de qualquer emissão."}</p>
         <div className="mt-5 border-t border-slate-100 pt-4 text-xs font-semibold text-slate-500">Competência selecionada · {monthLabel(selectedYear, selectedMonth)}</div>
       </div>
@@ -1061,7 +1145,7 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
 
 function ChargesHubPage({ batches, environment, onNavigate }: { batches: ChargeBatch[]; environment: AsaasEnvironment; onNavigate: (page: Page) => void }) {
   return <section className="max-w-[1020px] animate-[fade-in_180ms_ease-out]">
-    <PageHeading title="Cobranças" description={`Escolha como quer cobrar. Ambiente atual: ${environment}.`} />
+    <PageHeading title="Cobranças" description={`Escolha como quer cobrar. Ambiente atual: ${environmentDescription(environment)}.`} />
     <div className="grid gap-4 md:grid-cols-3">
       <button className="rounded-xl bg-charcoal p-6 text-left text-white shadow-lg shadow-slate-900/10 transition hover:-translate-y-0.5 hover:bg-black" onClick={() => onNavigate("spreadsheetImport")}><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-800 text-orange"><FileSpreadsheet size={21} /></div><p className="mt-4 text-base font-extrabold">Importar fechamento do EVO</p><p className="mt-1 text-sm leading-6 text-zinc-400">Use a planilha exportada para conferir pessoas, empresa e valor antes de preparar a cobrança.</p></button>
       <button className="panel p-6 text-left transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md" onClick={() => onNavigate("companies")}><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-800"><Building2 size={21} /></div><p className="mt-4 text-base font-extrabold">Nova cobrança por empresa</p><p className="mt-1 text-sm leading-6 text-slate-500">Escolha uma empresa e revise quais colaboradores entram na cobrança.</p></button>
@@ -1201,7 +1285,7 @@ function SpreadsheetImportPage({
     <button className="mb-6 inline-flex items-center gap-1 text-sm font-bold text-slate-500 transition hover:text-slate-900" onClick={onBack}><ArrowLeft size={16} />Cobranças</button>
     <div className="flex flex-col gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
       <div><p className="text-xs font-extrabold uppercase tracking-[0.16em] text-orange">Fonte do fechamento</p><h1 className="mt-2 text-3xl font-extrabold tracking-tight">Importar planilha do EVO</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Confira o agrupamento e o total da planilha antes de criar uma prévia. Esta etapa não gera boleto.</p></div>
-      <span className="badge border border-amber-200 bg-amber-50 text-amber-800">Asaas · {environment}</span>
+      <span className="badge border border-amber-200 bg-amber-50 text-amber-800">Asaas · {environmentDescription(environment)}</span>
     </div>
 
     {localError && <div className="mt-6"><Callout tone="error" onDismiss={() => setLocalError(null)}>{localError}</Callout></div>}
@@ -1368,7 +1452,7 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
     <button className="mb-6 inline-flex items-center gap-1 text-sm font-bold text-slate-500 transition hover:text-slate-900" onClick={() => onNavigate("charges")}><ArrowLeft size={16} />Cobranças</button>
     <div className="flex flex-col gap-3 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
       <div><p className="text-xs font-extrabold uppercase tracking-[0.16em] text-orange">Ciclo mensal</p><h1 className="mt-2 text-3xl font-extrabold tracking-tight text-slate-950">Faturamento do dia</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">Selecione uma data para revisar as empresas configuradas e gerar uma prévia segura do lote.</p></div>
-      <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-extrabold ${environment === "Sandbox" ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-800"}`}><span className="h-2 w-2 rounded-full bg-current" />Asaas · {environment}</div>
+      <div className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-extrabold ${environment === "Sandbox" ? "border-amber-200 bg-amber-50 text-amber-800" : "border-red-200 bg-red-50 text-red-800"}`}><span className="h-2 w-2 rounded-full bg-current" />Asaas · {environmentDescription(environment)}</div>
     </div>
 
     <div className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1401,7 +1485,7 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
               <input type="date" className="field mt-1.5 w-full" value={dueDate} onChange={(event) => onDueDateChange(event.target.value)} />
             </label>
             <p className="mt-1.5 text-xs leading-5 text-slate-500">O vencimento é negociado à parte e normalmente cai no mês seguinte ao fechamento. Por quanto tempo o boleto continua pagável depois dessa data é definido na conta do Asaas, não aqui.</p>
-            <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Ambiente</p><p className="mt-1 font-extrabold">{environment}</p></div>
+            <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Ambiente</p><p className="mt-1 font-extrabold">{environmentDescription(environment)}</p></div>
             <button className="button-primary mt-4 w-full" disabled={companiesForSelectedDay.length === 0 || isSelectedDueDateInPast || isDueDateBeforeClosing} onClick={() => onCreatePreview(true)}><FileText size={17} />Gerar prévia do dia {String(selectedDay).padStart(2, "0")}</button>
             <p className={`mt-3 text-xs leading-5 ${isSelectedDueDateInPast || isDueDateBeforeClosing ? "font-semibold text-amber-700" : "text-slate-500"}`}>
               {isSelectedDueDateInPast
@@ -2217,6 +2301,161 @@ function BatchCard({ batch, chargeCreationEnabled, onApprove, onExecute }: {
     <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && (chargeCreationEnabled ? <button className="button-primary h-9" onClick={onExecute}>Executar</button> : <span className="text-xs font-bold text-amber-700">Emissão bloqueada</span>)}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
 }
 
+/// Rótulos das notas. O status vem do Asaas em inglês e maiúsculas; quem lê a
+/// tela precisa saber se a nota saiu, se está a caminho ou se travou.
+const fiscalInvoiceLabels: Record<string, string> = {
+  Issuing: "Enviando",
+  Scheduled: "Agendada",
+  Synchronized: "Na prefeitura",
+  Authorized: "Emitida",
+  CancellationRequested: "Cancelamento em análise",
+  Canceled: "Cancelada",
+  CancellationDenied: "Cancelamento negado",
+  Failed: "Recusada",
+};
+
+function fiscalInvoiceLabel(status: string): string {
+  return fiscalInvoiceLabels[status] ?? status;
+}
+
+function fiscalInvoiceBadge(status: string): string {
+  if (status === "Authorized") return "bg-emerald-50 text-emerald-700";
+  if (status === "Failed" || status === "CancellationDenied") return "bg-red-50 text-red-700";
+  if (status === "Canceled") return "bg-slate-100 text-slate-600";
+  return "bg-amber-50 text-amber-700";
+}
+
+function FiscalInvoicesPage({
+  fiscalInvoices,
+  drafts,
+  environment,
+  hasPeriod,
+  invoiceIssuanceEnabled,
+  isSynchronizing,
+  selectedMonth,
+  selectedYear,
+  onNavigate,
+  onReissue,
+  onSynchronize,
+}: {
+  fiscalInvoices: FiscalInvoice[];
+  drafts: BillingDraft[];
+  environment: AsaasEnvironment;
+  hasPeriod: boolean;
+  invoiceIssuanceEnabled: boolean;
+  isSynchronizing: boolean;
+  selectedMonth: number;
+  selectedYear: number;
+  onNavigate: (page: Page) => void;
+  onReissue: (fiscalInvoice: FiscalInvoice) => void;
+  onSynchronize: () => void;
+}) {
+  const companyNameByDraftId = new Map(drafts.map((draft) => [draft.id, draft.companyName]));
+  const authorized = fiscalInvoices.filter((invoice) => invoice.status === "Authorized");
+  const refused = fiscalInvoices.filter((invoice) => invoice.status === "Failed");
+  const onTheWay = fiscalInvoices.filter((invoice) =>
+    invoice.status === "Issuing" || invoice.status === "Scheduled" || invoice.status === "Synchronized");
+
+  return <section>
+    <PageHeading
+      title="Notas fiscais"
+      description={`Notas de ${monthLabel(selectedYear, selectedMonth)}, emitidas junto das cobranças do lote.`}
+      action={fiscalInvoices.length > 0 ? (
+        <button className="button-secondary" disabled={isSynchronizing} onClick={onSynchronize}>
+          <RefreshCw className={isSynchronizing ? "animate-spin" : ""} size={16} />
+          Atualizar situação
+        </button>
+      ) : undefined}
+    />
+
+    {!invoiceIssuanceEnabled && (
+      <Callout tone="warning">
+        A emissão de notas está desligada no ambiente {environmentLabel(environment)}. As cobranças continuam
+        sendo criadas normalmente; nenhuma nota sai enquanto a configuração não for habilitada.
+      </Callout>
+    )}
+
+    {!hasPeriod ? (
+      <div className="panel p-7 text-center">
+        <ReceiptText className="mx-auto text-slate-400" size={26} />
+        <p className="mt-3 font-extrabold">O faturamento deste mês ainda não foi iniciado</p>
+        <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
+          A nota fiscal acompanha a cobrança. Inicie o faturamento e execute um lote para que as notas apareçam aqui.
+        </p>
+        <button className="button-secondary mt-5" onClick={() => onNavigate("dailyBilling")}>Ir para o faturamento</button>
+      </div>
+    ) : (
+      <>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <MetricCard icon={CheckCircle2} label="Emitidas" value={authorized.length.toString()} />
+          <MetricCard icon={LoaderCircle} label="A caminho" value={onTheWay.length.toString()} tone="amber" />
+          <MetricCard icon={CircleAlert} label="Recusadas" value={refused.length.toString()} tone="orange" />
+        </div>
+
+        {refused.length > 0 && (
+          <Callout tone="error">
+            {refused.length === 1
+              ? "Uma nota foi recusada e nenhuma cobrança ficou sem documento por acaso: corrija o motivo abaixo e reemita."
+              : `${refused.length} notas foram recusadas. Corrija o motivo de cada uma e reemita — elas não saem sozinhas.`}
+          </Callout>
+        )}
+
+        <div className="panel mt-5 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-[900px] w-full text-left text-sm">
+              <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-5 py-3">Empresa</th>
+                  <th className="px-5 py-3">Situação</th>
+                  <th className="px-5 py-3">Emissão</th>
+                  <th className="px-5 py-3 text-right">Valor</th>
+                  <th className="px-5 py-3 text-right">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {fiscalInvoices.map((invoice) => (
+                  <tr key={invoice.id} className="border-b border-slate-100 last:border-0">
+                    <td className="px-5 py-4">
+                      <p className="font-bold">{companyNameByDraftId.get(invoice.billingDraftId) ?? "Empresa da prévia"}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        {invoice.retainsIss ? "Com ISS retido pelo tomador" : "Sem retenção de ISS"}
+                        {invoice.sequence > 1 && ` · ${invoice.sequence}ª tentativa`}
+                      </p>
+                    </td>
+                    <td className="px-5 py-4">
+                      <span className={`badge ${fiscalInvoiceBadge(invoice.status)}`}>{fiscalInvoiceLabel(invoice.status)}</span>
+                      {invoice.errorMessage && (
+                        <p className="mt-2 max-w-md text-xs leading-5 text-red-700">{invoice.errorMessage}</p>
+                      )}
+                    </td>
+                    <td className="px-5 py-4 text-slate-600">{date(invoice.effectiveDate)}</td>
+                    <td className="px-5 py-4 text-right font-extrabold">{money(invoice.totalAmount)}</td>
+                    <td className="px-5 py-4 text-right">
+                      {invoice.status === "Failed" ? (
+                        <button className="button-secondary h-9" onClick={() => onReissue(invoice)}>
+                          <RefreshCw size={15} />Reemitir
+                        </button>
+                      ) : (
+                        <span className="text-xs font-semibold text-slate-400">Sem ação</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {fiscalInvoices.length === 0 && (
+                  <EmptyTable
+                    colSpan={5}
+                    message={`Nenhuma nota nesta competência. Elas são criadas junto das cobranças, quando um lote ${environmentLabel(environment)} é executado.`}
+                  />
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>
+    )}
+  </section>;
+}
+
 function IntegrationCard({ icon: Icon, title, description, configured, label }: { icon: typeof Database; title: string; description: string; configured: boolean; label: string }) {
   return <article className="panel p-5"><div className="flex items-start justify-between"><div className={`flex h-10 w-10 items-center justify-center rounded-lg ${configured ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}><Icon size={20} /></div><span className={`badge ${configured ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{configured ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}{label}</span></div><p className="mt-5 font-extrabold">{title}</p><p className="mt-2 text-sm leading-6 text-slate-500">{description}</p></article>;
 }
@@ -2340,7 +2579,13 @@ function EnvironmentSwitchModal({ currentEnvironment, targetEnvironment, onCance
 }
 
 function ConfirmationModal({ batch, confirmationText, environment, onCancel, onConfirmationTextChange, onConfirm }: { batch: ChargeBatch; confirmationText: string; environment: AsaasEnvironment; onCancel: () => void; onConfirmationTextChange: (value: string) => void; onConfirm: () => void }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between"><div><p className="text-lg font-extrabold">Confirmar execução</p><p className="mt-1 text-sm text-slate-500">Esta ação cria cobranças no Asaas.</p></div><button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100" onClick={onCancel}><X size={19} /></button></div><div className={`mt-5 rounded-xl p-4 ${environment === "Production" ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"}`}><p className="text-sm font-extrabold">{environment} · lote de {date(batch.dueDate)}</p><p className="mt-1 text-sm">{batch.items.length} cobrança(s) serão processadas.</p></div><label className="mt-5 block text-sm font-bold">Digite <span className="font-extrabold">CONFIRMAR</span> para continuar<input autoFocus className="field mt-2 w-full" value={confirmationText} onChange={(event) => onConfirmationTextChange(event.target.value)} /></label><div className="mt-6 flex justify-end gap-2"><button className="button-secondary" onClick={onCancel}>Cancelar</button><button className="button-primary" disabled={confirmationText.trim() !== "CONFIRMAR"} onClick={onConfirm}>Executar lote</button></div></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"><div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div className="flex items-start justify-between"><div><p className="text-lg font-extrabold">Confirmar execução</p><p className="mt-1 text-sm text-slate-500">Esta ação cria cobranças no Asaas.</p></div><button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100" onClick={onCancel}><X size={19} /></button></div><div className={`mt-5 rounded-xl p-4 ${environment === "Production" ? "bg-red-50 text-red-800" : "bg-amber-50 text-amber-800"}`}><p className="text-sm font-extrabold">{environmentDescription(environment)} · lote de {date(batch.dueDate)}</p><p className="mt-1 text-sm">{batch.items.length} cobrança(s) serão processadas.</p>
+      {/* A nota fiscal sai junto da cobrança, e quem confirma precisa saber
+          disso antes de digitar CONFIRMAR: emitir nota é irreversível na
+          prefeitura, e autorizar sem ser avisado não é autorizar. */}
+      <p className="mt-2 text-sm">{environment === "Production"
+        ? "A nota fiscal de cada cobrança é emitida junto, quando a emissão está habilitada."
+        : "Nenhuma nota fiscal é emitida em ambiente de teste."}</p></div><label className="mt-5 block text-sm font-bold">Digite <span className="font-extrabold">CONFIRMAR</span> para continuar<input autoFocus className="field mt-2 w-full" value={confirmationText} onChange={(event) => onConfirmationTextChange(event.target.value)} /></label><div className="mt-6 flex justify-end gap-2"><button className="button-secondary" onClick={onCancel}>Cancelar</button><button className="button-primary" disabled={confirmationText.trim() !== "CONFIRMAR"} onClick={onConfirm}>Executar lote</button></div></div></div>;
 }
 
 function PageHeading({ title, description, action }: { title: string; description: string; action?: ReactNode }) {
