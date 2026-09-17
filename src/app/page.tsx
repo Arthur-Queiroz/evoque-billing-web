@@ -506,7 +506,12 @@ export default function BillingApplication() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Evita disparar a busca debounçada depois que a página sai do ar.
+  // Cancela o timer da busca quando a aplicação inteira é desmontada. Note o
+  // alcance: trocar de item na barra lateral não desmonta nada — `page` é só
+  // estado local deste componente —, então um timer agendado pouco antes de sair
+  // do Histórico ainda dispara e atualiza o estado de uma tela que não está
+  // visível. É inofensivo, e tratar esse caso exigiria prender o timer ao ciclo
+  // de vida da página, o que não se paga por um efeito sem consequência.
   useEffect(() => {
     return () => {
       if (chargeHistorySearchTimeoutRef.current) {
@@ -2596,13 +2601,14 @@ function ChargeHistoryPage({ entries, environmentFilter, isLoading, search, onFi
       </div>
     </div>
 
-    {/* O histórico começa quando o sistema passa a emitir. Dizer isso evita que
-        uma lista curta pareça defeito para quem sabe que existem mais cobranças
-        no painel do Asaas. */}
-    <Callout tone="warning">
+    {/* Legenda, não aviso. O escopo desta tela não muda com os dados e não há
+        nada a fazer a respeito, então um banner de alerta permanente só ensinaria
+        a ignorar alerta. Dizer isso continua necessário: sem a frase, uma lista
+        curta parece defeito para quem sabe que o painel do Asaas tem mais. */}
+    <p className="mb-4 text-sm text-slate-500">
       Aqui aparecem apenas as cobranças emitidas por este sistema. As criadas
       diretamente no painel do Asaas continuam só lá.
-    </Callout>
+    </p>
 
     <div className="panel overflow-hidden">
       <div className="overflow-x-auto">
