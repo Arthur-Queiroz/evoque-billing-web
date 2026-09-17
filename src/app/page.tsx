@@ -34,6 +34,7 @@ import {
   BillingDraft,
   BillingPeriod,
   ChargeBatch,
+  ChargeHistoryEntry,
   Company,
   CompanyBillingHistoryEntry,
   CompanyCatalogImportPreview,
@@ -61,6 +62,7 @@ type Page =
   | "spreadsheetImport"
   | "dailyBilling"
   | "fiscalInvoices"
+  | "chargeHistory"
   | "integrations";
 
 /** Filtros oferecidos na tela de empresas, na ordem em que aparecem. */
@@ -283,6 +285,12 @@ export default function BillingApplication() {
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
+  const [chargeHistory, setChargeHistory] = useState<ChargeHistoryEntry[]>([]);
+  const [chargeHistorySearch, setChargeHistorySearch] = useState("");
+  const [chargeHistoryEnvironment, setChargeHistoryEnvironment] = useState<AsaasEnvironment | "all">("all");
+  const [isLoadingChargeHistory, setIsLoadingChargeHistory] = useState(false);
+  const chargeHistorySearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chargeHistoryRequestIdRef = useRef(0);
 
   const selectedPeriod = useMemo(
     () => billingPeriods.find((period) => period.year === selectedYear && period.month === selectedMonth) ?? null,
@@ -413,6 +421,62 @@ export default function BillingApplication() {
     }
   }
 
+  /**
+   * Consulta o histórico. `requestId` descarta qualquer resposta que não seja
+   * mais a mais recente: sem isso, uma resposta lenta disparada por uma busca
+   * antiga poderia chegar depois da busca atual e sobrescrever o resultado
+   * certo com um errado.
+   */
+  async function refreshChargeHistory(
+    search: string = chargeHistorySearch,
+    environmentFilter: AsaasEnvironment | "all" = chargeHistoryEnvironment,
+  ) {
+    const requestId = ++chargeHistoryRequestIdRef.current;
+    setIsLoadingChargeHistory(true);
+    try {
+      const entries = await api.getChargeHistory({
+        search: search.trim() || undefined,
+        environment: environmentFilter === "all" ? undefined : environmentFilter,
+      });
+      if (requestId === chargeHistoryRequestIdRef.current) {
+        setChargeHistory(entries);
+      }
+    } catch (error) {
+      if (requestId === chargeHistoryRequestIdRef.current) {
+        showError(error instanceof Error ? error.message : "Não foi possível consultar o histórico.");
+      }
+    } finally {
+      if (requestId === chargeHistoryRequestIdRef.current) {
+        setIsLoadingChargeHistory(false);
+      }
+    }
+  }
+
+  /**
+   * O campo de busca dispara a cada tecla; sem espera, digitar "Farmava"
+   * emitiria sete requisições. Só a busca é adiada — o clique de ambiente é
+   * discreto, não digitação, e deve refletir na hora.
+   */
+  function applyChargeHistoryFilters(search: string, environmentFilter: AsaasEnvironment | "all") {
+    const isEnvironmentChange = environmentFilter !== chargeHistoryEnvironment;
+    setChargeHistorySearch(search);
+    setChargeHistoryEnvironment(environmentFilter);
+
+    if (chargeHistorySearchTimeoutRef.current) {
+      clearTimeout(chargeHistorySearchTimeoutRef.current);
+      chargeHistorySearchTimeoutRef.current = null;
+    }
+
+    if (isEnvironmentChange) {
+      void refreshChargeHistory(search, environmentFilter);
+      return;
+    }
+
+    chargeHistorySearchTimeoutRef.current = setTimeout(() => {
+      void refreshChargeHistory(search, environmentFilter);
+    }, 300);
+  }
+
   async function refreshBillingData(year: number, month: number) {
     try {
       const [draftData, batchData, invoiceData] = await Promise.all([
@@ -437,8 +501,18 @@ export default function BillingApplication() {
 
   useEffect(() => {
     void refreshData(true);
+    void refreshChargeHistory();
     // A primeira carga deve consultar a competência atual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Evita disparar a busca debounçada depois que a página sai do ar.
+  useEffect(() => {
+    return () => {
+      if (chargeHistorySearchTimeoutRef.current) {
+        clearTimeout(chargeHistorySearchTimeoutRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -873,6 +947,15 @@ export default function BillingApplication() {
                 onSynchronize={() => void synchronizeFiscalInvoices()}
               />
             )}
+            {page === "chargeHistory" && (
+              <ChargeHistoryPage
+                entries={chargeHistory}
+                environmentFilter={chargeHistoryEnvironment}
+                isLoading={isLoadingChargeHistory}
+                search={chargeHistorySearch}
+                onFiltersChange={applyChargeHistoryFilters}
+              />
+            )}
             {page === "integrations" && <IntegrationsPage status={integrationStatus} activeCatalogCompanyCount={activeCatalogCompanyCount} latestImport={latestCatalogImport} onOpenCatalog={() => setPage("companies")} onImportCatalog={() => setPage("companyCatalogImport")} />}
           </div>
         </div>
@@ -912,6 +995,7 @@ function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }
     { page: "companies", label: "Empresas", icon: Building2 },
     { page: "charges", label: "Cobranças", icon: CreditCard },
     { page: "fiscalInvoices", label: "Notas fiscais", icon: ReceiptText },
+    { page: "chargeHistory", label: "Histórico", icon: CalendarDays },
     { page: "integrations", label: "Integrações", icon: Wifi },
   ];
 
@@ -2462,6 +2546,142 @@ function FiscalInvoicesPage({
         </div>
       </>
     )}
+  </section>;
+}
+
+function ChargeHistoryPage({ entries, environmentFilter, isLoading, search, onFiltersChange }: {
+  entries: ChargeHistoryEntry[];
+  environmentFilter: AsaasEnvironment | "all";
+  isLoading: boolean;
+  search: string;
+  onFiltersChange: (search: string, environmentFilter: AsaasEnvironment | "all") => void;
+}) {
+  const environmentOptions: Array<{ key: AsaasEnvironment | "all"; label: string }> = [
+    { key: "all", label: "Todos" },
+    { key: "Sandbox", label: "Teste" },
+    { key: "Production", label: "Real" },
+  ];
+  // Uma lista vazia por causa de um filtro não é a mesma coisa que uma lista
+  // vazia porque nada foi emitido ainda. Confundir as duas faria o operador
+  // achar que o sistema nunca emitiu nada, quando na verdade a busca ou o
+  // ambiente escolhido é que não têm resultado.
+  const hasActiveFilters = Boolean(search.trim()) || environmentFilter !== "all";
+
+  return <section>
+    <PageHeading
+      title="Histórico"
+      description="Cobranças emitidas por este sistema, da mais recente para a mais antiga."
+    />
+
+    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="relative flex max-w-md flex-1 items-center">
+        <Search className="absolute ml-3 text-slate-400" size={17} />
+        <input
+          className="field w-full pl-10"
+          placeholder="Buscar por empresa ou CNPJ"
+          value={search}
+          onChange={(event) => onFiltersChange(event.target.value, environmentFilter)}
+        />
+      </div>
+      <div className="flex gap-2">
+        {environmentOptions.map((option) => (
+          <button
+            key={option.key}
+            className={`badge ${environmentFilter === option.key ? "bg-charcoal text-white" : "bg-slate-100 text-slate-700"}`}
+            onClick={() => onFiltersChange(search, option.key)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+
+    {/* O histórico começa quando o sistema passa a emitir. Dizer isso evita que
+        uma lista curta pareça defeito para quem sabe que existem mais cobranças
+        no painel do Asaas. */}
+    <Callout tone="warning">
+      Aqui aparecem apenas as cobranças emitidas por este sistema. As criadas
+      diretamente no painel do Asaas continuam só lá.
+    </Callout>
+
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="min-w-[980px] w-full text-left text-sm">
+          <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-5 py-3">Emissão</th>
+              <th className="px-5 py-3">Empresa</th>
+              <th className="px-5 py-3">Ambiente</th>
+              <th className="px-5 py-3 text-right">Valor</th>
+              <th className="px-5 py-3">Nota fiscal</th>
+              <th className="px-5 py-3 text-right">Documentos</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={`${entry.chargeBatchId}-${entry.billingDraftId}`} className="border-b border-slate-100 last:border-0">
+                <td className="px-5 py-4">
+                  <p className="font-bold">{date(entry.issuedAt)}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {monthLabel(entry.year, entry.month)} · vence {date(entry.dueDate)}
+                  </p>
+                </td>
+                <td className="px-5 py-4">
+                  <p className="font-bold">{entry.companyName}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {entry.formattedCompanyTaxId} · {entry.memberCount} pessoa(s)
+                  </p>
+                </td>
+                <td className="px-5 py-4">
+                  <span className={`badge ${entry.asaasEnvironment === "Production" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"}`}>
+                    {entry.asaasEnvironment === "Production" ? "Real" : "Teste"}
+                  </span>
+                </td>
+                <td className="px-5 py-4 text-right font-extrabold">{money(entry.totalAmount)}</td>
+                <td className="px-5 py-4">
+                  {entry.fiscalInvoiceStatus ? (
+                    <span className={`badge ${fiscalInvoiceBadge(entry.fiscalInvoiceStatus)}`}>
+                      {fiscalInvoiceLabel(entry.fiscalInvoiceStatus)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">Não emitida</span>
+                  )}
+                </td>
+                <td className="px-5 py-4">
+                  <div className="flex justify-end gap-3">
+                    {entry.bankSlipUrl && (
+                      <a className="inline-flex items-center gap-1.5 text-sm font-extrabold text-orange hover:underline"
+                        href={entry.bankSlipUrl} target="_blank" rel="noopener noreferrer">
+                        <FileText size={15} />Boleto
+                      </a>
+                    )}
+                    {entry.fiscalInvoicePdfUrl && (
+                      <a className="inline-flex items-center gap-1.5 text-sm font-extrabold text-orange hover:underline"
+                        href={entry.fiscalInvoicePdfUrl} target="_blank" rel="noopener noreferrer">
+                        <ReceiptText size={15} />Nota
+                      </a>
+                    )}
+                    {!entry.bankSlipUrl && !entry.fiscalInvoicePdfUrl && (
+                      <span className="text-xs text-slate-400">{entry.itemErrorMessage ? "Falhou" : "Sem documento"}</span>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {entries.length === 0 && (
+              <EmptyTable
+                colSpan={6}
+                message={isLoading
+                  ? "Consultando..."
+                  : hasActiveFilters
+                    ? "Nenhuma cobrança encontrada para esta busca ou ambiente."
+                    : "Nenhuma cobrança emitida por este sistema ainda. Execute um lote para que ela apareça aqui."}
+              />
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   </section>;
 }
 
