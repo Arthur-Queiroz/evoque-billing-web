@@ -2390,6 +2390,29 @@ function BatchCard({ batch, chargeCreationEnabled, onApprove, onExecute }: {
     <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && (chargeCreationEnabled ? <button className="button-primary h-9" onClick={onExecute}>Executar</button> : <span className="text-xs font-bold text-amber-700">Emissão bloqueada</span>)}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
 }
 
+/// Rótulos do boleto. "Não consultado" não é o mesmo que "em aberto": o
+/// primeiro diz que ninguém perguntou ao Asaas, o segundo é resposta dele. Uma
+/// cobrança recém-emitida cai no primeiro, e chamá-la de "em aberto" faria a
+/// tela afirmar que o cliente não pagou sem ter olhado.
+const chargePaymentLabels: Record<string, string> = {
+  Unknown: "Não consultado",
+  Pending: "Em aberto",
+  Received: "Pago",
+  Confirmed: "Pago",
+  Overdue: "Vencido",
+  RefundRequested: "Estorno solicitado",
+  Refunded: "Estornado",
+};
+
+function chargePaymentBadge(paymentStatus: string): string {
+  if (paymentStatus === "Received" || paymentStatus === "Confirmed") return "bg-emerald-50 text-emerald-700";
+  if (paymentStatus === "Overdue") return "bg-red-50 text-red-700";
+  if (paymentStatus === "Refunded") return "bg-slate-100 text-slate-600";
+  // Inclui "não consultado" e "estorno solicitado": os dois são estados em
+  // movimento, e nenhum deles merece verde nem vermelho.
+  return "bg-amber-50 text-amber-700";
+}
+
 /// Rótulos das notas. O status vem do Asaas em inglês e maiúsculas; quem lê a
 /// tela precisa saber se a nota saiu, se está a caminho ou se travou.
 const fiscalInvoiceLabels: Record<string, string> = {
@@ -2612,13 +2635,14 @@ function ChargeHistoryPage({ entries, environmentFilter, isLoading, search, onFi
 
     <div className="panel overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="min-w-[980px] w-full text-left text-sm">
+        <table className="min-w-[1100px] w-full text-left text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-5 py-3">Emissão</th>
               <th className="px-5 py-3">Empresa</th>
               <th className="px-5 py-3">Ambiente</th>
               <th className="px-5 py-3 text-right">Valor</th>
+              <th className="px-5 py-3">Boleto</th>
               <th className="px-5 py-3">Nota fiscal</th>
               <th className="px-5 py-3 text-right">Documentos</th>
             </tr>
@@ -2644,6 +2668,12 @@ function ChargeHistoryPage({ entries, environmentFilter, isLoading, search, onFi
                   </span>
                 </td>
                 <td className="px-5 py-4 text-right font-extrabold">{money(entry.totalAmount)}</td>
+                <td className="px-5 py-4">
+                  <span className={`badge ${chargePaymentBadge(entry.paymentStatus)}`}>
+                    {chargePaymentLabels[entry.paymentStatus] ?? entry.paymentStatus}
+                  </span>
+                  {entry.paidAt && <p className="mt-1 text-xs text-slate-500">em {date(entry.paidAt)}</p>}
+                </td>
                 <td className="px-5 py-4">
                   {entry.fiscalInvoiceStatus ? (
                     <span className={`badge ${fiscalInvoiceBadge(entry.fiscalInvoiceStatus)}`}>
@@ -2676,7 +2706,7 @@ function ChargeHistoryPage({ entries, environmentFilter, isLoading, search, onFi
             ))}
             {entries.length === 0 && (
               <EmptyTable
-                colSpan={6}
+                colSpan={7}
                 message={isLoading
                   ? "Consultando..."
                   : hasActiveFilters

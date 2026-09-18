@@ -399,6 +399,8 @@ export interface ChargeHistoryEntry {
   asaasPaymentId: string | null;
   bankSlipUrl: string | null;
   itemErrorMessage: string | null;
+  paymentStatus: string;
+  paidAt: string | null;
   fiscalInvoiceStatus: string | null;
   fiscalInvoicePdfUrl: string | null;
   fiscalInvoiceErrorMessage: string | null;
