@@ -250,6 +250,7 @@ export interface Company {
   isActive: boolean;
   source: CompanySource;
   memberCount: number;
+  amountPerMember: number | null;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
   seenInLastImport: boolean;
@@ -369,6 +370,35 @@ export interface CompanyFilters {
 export interface SaveCompanyInput {
   displayName?: string | null;
   closingDay: number | null;
+  amountPerMember?: number | null;
+}
+
+export interface GeneratedBillingDraft {
+  billingDraftId: string;
+  companyTaxId: string;
+  companyName: string;
+  memberCount: number;
+  amountPerMember: number;
+  totalAmount: number;
+}
+
+export interface SkippedCompany {
+  companyTaxId: string;
+  companyName: string;
+  memberCount: number;
+  reason: string;
+}
+
+export interface MemberWithoutCompany {
+  evoMemberId: number;
+  memberName: string;
+}
+
+export interface GenerateCorporateDraftsResult {
+  created: GeneratedBillingDraft[];
+  skipped: SkippedCompany[];
+  unknownContracts: string[];
+  membersWithoutCompany: MemberWithoutCompany[];
 }
 
 export interface CreateSandboxAsaasCustomerResponse {
@@ -641,6 +671,10 @@ export const api = {
       method: "POST",
     }),
   getBillingDrafts: (year: number, month: number) => request<BillingDraft[]>(`/api/billing-periods/${year}/${month}/drafts`),
+  generateCorporateDrafts: (year: number, month: number) =>
+    request<GenerateCorporateDraftsResult>(`/api/billing-periods/${year}/${month}/corporate-drafts`, {
+      method: "POST",
+    }),
   approveBillingDraft: (billingDraftId: string) =>
     request<BillingDraft>(`/api/billing-drafts/${billingDraftId}/approve`, {
       method: "POST",

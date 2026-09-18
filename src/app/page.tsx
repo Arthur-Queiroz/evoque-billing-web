@@ -49,6 +49,7 @@ import {
   IntegrationStatus,
   BillingSpreadsheetPreview,
   FiscalInvoice,
+  GenerateCorporateDraftsResult,
   Session,
 } from "@/lib/api";
 
@@ -98,6 +99,7 @@ function toCompanyFilters(filterKey: CompanyFilterKey, search: string): CompanyF
 interface CompanyFormValues {
   displayName: string;
   closingDay: number | null;
+  amountPerMember?: number | null;
 }
 
 function companySourceLabel(source: Company["source"]): string {
@@ -312,6 +314,8 @@ export default function BillingApplication() {
   const [schedules, setSchedules] = useState<CompanySchedule[]>([]);
   const [billingPeriods, setBillingPeriods] = useState<BillingPeriod[]>([]);
   const [drafts, setDrafts] = useState<BillingDraft[]>([]);
+  const [corporateDraftResult, setCorporateDraftResult] = useState<GenerateCorporateDraftsResult | null>(null);
+  const [isGeneratingCorporateDrafts, setIsGeneratingCorporateDrafts] = useState(false);
   const [batches, setBatches] = useState<ChargeBatch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -632,6 +636,7 @@ export default function BillingApplication() {
   useEffect(() => {
     if (session === null) return;
 
+    setCorporateDraftResult(null);
     void refreshBillingData(selectedYear, selectedMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMonth, selectedYear, session]);
@@ -907,6 +912,24 @@ export default function BillingApplication() {
     </main>;
   }
 
+  async function generateCorporateDrafts() {
+    if (isGeneratingCorporateDrafts) return;
+
+    setIsGeneratingCorporateDrafts(true);
+    try {
+      const result = await api.generateCorporateDrafts(selectedYear, selectedMonth);
+      setCorporateDraftResult(result);
+      showNotice(
+        `${result.created.length} pr\u00e9via(s) criada(s). Nenhuma cobran\u00e7a foi enviada ao Asaas.`,
+      );
+      await refreshBillingData(selectedYear, selectedMonth);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "N\u00e3o foi poss\u00edvel gerar as pr\u00e9vias corporativas.");
+    } finally {
+      setIsGeneratingCorporateDrafts(false);
+    }
+  }
+
   if (session === null) {
     return <>
       {errorMessage && <div className="mx-auto max-w-sm pt-6"><Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout></div>}
@@ -1058,9 +1081,11 @@ export default function BillingApplication() {
                 batches={batches}
                 companies={catalogCompanies}
                 chargeCreationEnabled={selectedEnvironmentStatus?.chargeCreationEnabled ?? false}
+                corporateDraftResult={corporateDraftResult}
                 drafts={drafts}
                 environment={environment}
                 hasPeriod={Boolean(selectedPeriod)}
+                isGeneratingCorporateDrafts={isGeneratingCorporateDrafts}
                 scheduleDay={scheduleDay}
                 dueDate={dueDate || suggestDueDate(selectedYear, selectedMonth, Number(scheduleDay))}
                 onDueDateChange={setDueDate}
@@ -1073,6 +1098,7 @@ export default function BillingApplication() {
                 onApproveDraft={(billingDraftId) => void approveDraft(billingDraftId)}
                 onCreatePeriod={() => void createOrRefreshSelectedPeriod()}
                 onCreatePreview={(scheduled) => void createBatchPreview(scheduled)}
+                onGenerateCorporateDrafts={() => void generateCorporateDrafts()}
                 onExecute={(batch) => setConfirmationBatch(batch)}
                 onNavigate={setPage}
                 onScheduleDayChange={setScheduleDay}
@@ -1348,11 +1374,12 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
         </div>
       </div>
 
-      <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[980px] w-full text-left text-sm">
+      <div className="panel overflow-hidden"><div className="overflow-x-auto"><table className="min-w-[1080px] w-full text-left text-sm">
         <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500"><tr>
           <th className="px-5 py-3">Empresa</th>
           <th className="px-5 py-3">CNPJ</th>
           <th className="px-5 py-3">Pessoas</th>
+          <th className="px-5 py-3">Valor por pessoa</th>
           <th className="px-5 py-3">Dia</th>
           <th className="px-5 py-3">Asaas</th>
           <th className="px-5 py-3">Origem</th>
@@ -1368,6 +1395,11 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
               </td>
               <td className="px-5 py-4 text-slate-600">{company.formattedTaxId}</td>
               <td className="px-5 py-4 text-slate-600">{company.memberCount}</td>
+              <td className="px-5 py-4 font-extrabold">
+                {company.amountPerMember === null
+                  ? <span className="badge bg-amber-50 text-amber-700">Sem valor</span>
+                  : money(company.amountPerMember)}
+              </td>
               <td className="px-5 py-4 font-extrabold">{company.closingDay ? String(company.closingDay).padStart(2, "0") : "—"}</td>
               <td className="px-5 py-4 text-slate-600">{companyAsaasLabel(company)}</td>
               <td className="px-5 py-4 text-slate-600">{companySourceLabel(company.source)}</td>
@@ -1377,7 +1409,7 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
               <td className="px-5 py-4 text-right"><button className="button-secondary h-9" onClick={() => onOpenCompany(company)}>Abrir</button></td>
             </tr>
           ))}
-          {companies.length === 0 && <EmptyTable colSpan={8} message="Nenhuma empresa corresponde a esta busca ou filtro." />}
+          {companies.length === 0 && <EmptyTable colSpan={9} message="Nenhuma empresa corresponde a esta busca ou filtro." />}
         </tbody>
       </table></div></div>
     </>}
@@ -1661,9 +1693,9 @@ function ImportMetric({ label, value }: { label: string; value: string }) {
   return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
 }
 
-function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDate, environment, hasPeriod, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onNavigate, onScheduleDayChange, onToggleDraft }: {
-  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
-  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
+function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onToggleDraft }: {
+  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; corporateDraftResult: GenerateCorporateDraftsResult | null; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; isGeneratingCorporateDrafts: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
+  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
 }) {
   const selectedDay = Number(scheduleDay);
   const closingDate = new Date(selectedYear, selectedMonth - 1, selectedDay);
@@ -1707,6 +1739,20 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
     </div>
 
     {!hasPeriod ? <div className="panel mt-7 flex flex-col gap-5 p-6 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-extrabold">O faturamento deste mês ainda não foi iniciado</p><p className="mt-1 text-sm text-slate-500">Inicie o faturamento para preparar prévias e lotes. Nenhuma cobrança será criada no Asaas nesta etapa.</p></div><button className="button-primary shrink-0" onClick={onCreatePeriod}><Plus size={17} />Iniciar faturamento de {monthLabel(selectedYear, selectedMonth)}</button></div> : <>
+      <section className="panel mt-7 p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="font-extrabold">Pr&eacute;vias corporativas da compet&ecirc;ncia</p>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">Gera uma pr&eacute;via por empresa usando os colaboradores ativos e o valor configurado no cat&aacute;logo. Esta etapa n&atilde;o envia cobran&ccedil;as ao Asaas.</p>
+          </div>
+          <button className="button-primary shrink-0" disabled={isGeneratingCorporateDrafts} onClick={onGenerateCorporateDrafts}>
+            {isGeneratingCorporateDrafts ? <LoaderCircle className="animate-spin" size={17} /> : <FileText size={17} />}
+            {isGeneratingCorporateDrafts ? "Gerando..." : "Gerar prévias corporativas"}
+          </button>
+        </div>
+        {corporateDraftResult && <CorporateDraftGenerationResult result={corporateDraftResult} />}
+      </section>
+
       <section className="mt-7 overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 bg-slate-50/70 px-6 py-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center rounded-xl bg-orange/10 text-orange"><CalendarDays size={21} /></div><div><p className="text-xs font-extrabold uppercase tracking-[0.14em] text-slate-500">Fechamento selecionado</p><h2 className="mt-0.5 text-xl font-extrabold">Dia {String(selectedDay).padStart(2, "0")}</h2></div></div><p className="text-sm text-slate-500">{companiesForSelectedDay.length} empresa(s) ativa(s) na agenda</p></div></div>
         <div className="grid gap-5 p-6 xl:grid-cols-[1fr_330px]">
@@ -1789,7 +1835,7 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
                       <td className="px-5 py-4 text-right">{canApprove ? <button className="button-secondary h-9" onClick={() => onApproveDraft(draft.id)}><CheckCircle2 size={16} />Aprovar prévia</button> : <span className="text-xs font-semibold text-slate-400">{canSelect ? "Pronta para o lote" : "Sem ação"}</span>}</td>
                     </tr>;
                   })}
-                  {drafts.length === 0 && <EmptyTable colSpan={5} message="Ainda não há prévias nesta competência. Importe um fechamento do EVO pela tela de Cobranças." />}
+                  {drafts.length === 0 && <EmptyTable colSpan={5} message="Ainda não há prévias nesta competência. Gere as prévias corporativas ou importe um fechamento do EVO." />}
                 </tbody>
               </table>
             </div>
@@ -1804,6 +1850,63 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, drafts, dueDat
       </details>
     </>}
   </section>;
+}
+
+function CorporateDraftGenerationResult({ result }: { result: GenerateCorporateDraftsResult }) {
+  const generatedTotal = result.created.reduce(
+    (total, billingDraft) => total + billingDraft.totalAmount,
+    0,
+  );
+
+  return <div className="mt-5 space-y-4 border-t border-slate-200 pt-5">
+    <div className="rounded-xl bg-slate-50 p-5">
+      <p className="font-extrabold">{result.created.length} pr&eacute;via(s) criada(s) &middot; {money(generatedTotal)}</p>
+      <ul className="mt-3 space-y-2 text-sm">
+        {result.created.map((billingDraft) => (
+          <li key={billingDraft.billingDraftId} className="flex flex-col justify-between gap-1 sm:flex-row sm:gap-4">
+            <span className="font-semibold">{billingDraft.companyName}</span>
+            <span className="text-slate-500">
+              {billingDraft.memberCount} &times; {money(billingDraft.amountPerMember)} = <strong>{money(billingDraft.totalAmount)}</strong>
+            </span>
+          </li>
+        ))}
+        {result.created.length === 0 && <li className="text-slate-400">nenhuma</li>}
+      </ul>
+    </div>
+
+    <div className="grid gap-4 xl:grid-cols-3">
+      <GenerationResultList
+        title="Empresas não faturadas"
+        items={result.skipped.map((company) => (
+          <li key={company.companyTaxId}>
+            <span className="font-semibold">{company.companyName} &middot; {company.memberCount} pessoa(s)</span>
+            <p className="mt-0.5 text-amber-700">{company.reason}</p>
+          </li>
+        ))}
+      />
+      <GenerationResultList
+        title="Colaboradores sem empresa no cadastro do EVO"
+        items={result.membersWithoutCompany.map((member) => (
+          <li key={member.evoMemberId}>
+            {member.memberName} <span className="text-slate-400">#{member.evoMemberId}</span>
+          </li>
+        ))}
+      />
+      <GenerationResultList
+        title="Contratos não reconhecidos"
+        items={result.unknownContracts.map((contract) => <li key={contract}>{contract}</li>)}
+      />
+    </div>
+  </div>;
+}
+
+function GenerationResultList({ items, title }: { items: ReactNode[]; title: string }) {
+  return <div className="rounded-xl border border-slate-200 bg-white p-5">
+    <p className="font-extrabold">{title}</p>
+    <ul className="mt-3 space-y-2 text-sm text-slate-600">
+      {items.length > 0 ? items : <li className="text-slate-400">nenhum</li>}
+    </ul>
+  </div>;
 }
 
 function MembershipSummary({ memberships }: { memberships: EvoMembership[] }) {
@@ -2020,6 +2123,9 @@ function CompanyDetailPage({
 }) {
   const [displayName, setDisplayName] = useState(company.displayName);
   const [closingDay, setBillingDay] = useState(company.closingDay ? String(company.closingDay) : "");
+  const [amountPerMember, setAmountPerMember] = useState(
+    company.amountPerMember === null ? "" : String(company.amountPerMember).replace(".", ","),
+  );
   const [sandboxEmail, setSandboxEmail] = useState(controlledSandboxEmail);
   const [isSynchronizingSandbox, setIsSynchronizingSandbox] = useState(false);
   const [isSynchronizingProduction, setIsSynchronizingProduction] = useState(false);
@@ -2030,6 +2136,9 @@ function CompanyDetailPage({
   useEffect(() => {
     setDisplayName(company.displayName);
     setBillingDay(company.closingDay ? String(company.closingDay) : "");
+    setAmountPerMember(
+      company.amountPerMember === null ? "" : String(company.amountPerMember).replace(".", ","),
+    );
   }, [company]);
 
   useEffect(() => {
@@ -2148,9 +2257,16 @@ function CompanyDetailPage({
             className="mt-5 space-y-3"
             onSubmit={(event) => {
               event.preventDefault();
+              const normalizedAmount = amountPerMember.trim().replace(",", ".");
+              const parsedAmount = normalizedAmount ? Number(normalizedAmount) : null;
+              if (parsedAmount !== null && (!Number.isFinite(parsedAmount) || parsedAmount <= 0)) {
+                setDetailError("Informe um valor por colaborador maior que zero.");
+                return;
+              }
               onSave({
                 displayName,
                 closingDay: closingDay ? Number(closingDay) : null,
+                amountPerMember: parsedAmount,
               });
             }}
           >
@@ -2163,6 +2279,16 @@ function CompanyDetailPage({
                 {closingDays.map((day) => <option key={day} value={day}>Dia {String(day).padStart(2, "0")}</option>)}
               </select>
             </label>
+            <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Valor por colaborador
+              <input
+                className="field mt-1.5 w-full"
+                inputMode="decimal"
+                placeholder="Ex.: 89,90"
+                value={amountPerMember}
+                onChange={(event) => setAmountPerMember(event.target.value)}
+              />
+            </label>
+            <p className="text-xs leading-5 text-slate-500">Este valor multiplica a quantidade de colaboradores eleg&iacute;veis ao gerar a pr&eacute;via mensal.</p>
             <button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar dados</button>
           </form>
           <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Atualizada em {date(company.updatedAt)} por {company.updatedBy}.</p>
