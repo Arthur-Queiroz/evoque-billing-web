@@ -382,6 +382,42 @@ export interface CompanyAsaasSynchronization {
   message: string;
 }
 
+export interface ChargeHistoryEntry {
+  chargeBatchId: string;
+  billingDraftId: string;
+  year: number;
+  month: number;
+  asaasEnvironment: AsaasEnvironment;
+  companyName: string;
+  companyTaxId: string;
+  formattedCompanyTaxId: string;
+  totalAmount: number;
+  memberCount: number;
+  dueDate: string;
+  issuedAt: string;
+  itemStatus: string;
+  asaasPaymentId: string | null;
+  bankSlipUrl: string | null;
+  itemErrorMessage: string | null;
+  paymentStatus: string;
+  paidAt: string | null;
+  fiscalInvoiceStatus: string | null;
+  fiscalInvoicePdfUrl: string | null;
+  fiscalInvoiceErrorMessage: string | null;
+}
+
+export interface ChargeHistoryFilters {
+  search?: string;
+  environment?: AsaasEnvironment;
+  year?: number;
+  month?: number;
+  /**
+   * Chaves que o backend traduz: unknown, pending, paid, overdue, refunded.
+   * "paid" cobre Received e Confirmed, que a tela mostra com o mesmo rótulo.
+   */
+  paymentStatus?: string;
+}
+
 const configuredApiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/$/, "");
 // Em desenvolvimento, o Next encaminha /api para o backend local. Assim o
 // navegador sempre usa a mesma origem do client e nÃ£o depende de CORS.
@@ -462,6 +498,28 @@ function buildCompanyQuery(filters: CompanyFilters): string {
   }
   if (filters.asaasLink) {
     query.set("asaasLink", filters.asaasLink);
+  }
+
+  const queryText = query.toString();
+  return queryText ? `?${queryText}` : "";
+}
+
+function buildChargeHistoryQuery(filters: ChargeHistoryFilters): string {
+  const query = new URLSearchParams();
+  if (filters.search) {
+    query.set("search", filters.search);
+  }
+  if (filters.environment) {
+    query.set("environment", filters.environment);
+  }
+  if (filters.year !== undefined) {
+    query.set("year", String(filters.year));
+  }
+  if (filters.month !== undefined) {
+    query.set("month", String(filters.month));
+  }
+  if (filters.paymentStatus) {
+    query.set("paymentStatus", filters.paymentStatus);
   }
 
   const queryText = query.toString();
@@ -648,4 +706,11 @@ export const api = {
       { method: "POST", body: formData },
     );
   },
+  getChargeHistory: (filters: ChargeHistoryFilters = {}) =>
+    request<ChargeHistoryEntry[]>(`/api/charge-history${buildChargeHistoryQuery(filters)}`),
+  synchronizeChargeHistory: (operatorId: string) =>
+    request<ChargeHistoryEntry[]>("/api/charge-history/synchronize", {
+      method: "POST",
+      body: JSON.stringify({ operatorId }),
+    }),
 };

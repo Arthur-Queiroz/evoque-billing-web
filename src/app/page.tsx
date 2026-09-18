@@ -34,6 +34,7 @@ import {
   BillingDraft,
   BillingPeriod,
   ChargeBatch,
+  ChargeHistoryEntry,
   Company,
   CompanyBillingHistoryEntry,
   CompanyCatalogImportPreview,
@@ -61,6 +62,7 @@ type Page =
   | "spreadsheetImport"
   | "dailyBilling"
   | "fiscalInvoices"
+  | "chargeHistory"
   | "integrations";
 
 /** Filtros oferecidos na tela de empresas, na ordem em que aparecem. */
@@ -283,6 +285,14 @@ export default function BillingApplication() {
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
+  const [chargeHistory, setChargeHistory] = useState<ChargeHistoryEntry[]>([]);
+  const [chargeHistorySearch, setChargeHistorySearch] = useState("");
+  const [chargeHistoryEnvironment, setChargeHistoryEnvironment] = useState<AsaasEnvironment | "all">("all");
+  const [chargeHistoryPayment, setChargeHistoryPayment] = useState<ChargePaymentFilterKey>("all");
+  const [isSynchronizingChargeHistory, setIsSynchronizingChargeHistory] = useState(false);
+  const [isLoadingChargeHistory, setIsLoadingChargeHistory] = useState(false);
+  const chargeHistorySearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chargeHistoryRequestIdRef = useRef(0);
 
   const selectedPeriod = useMemo(
     () => billingPeriods.find((period) => period.year === selectedYear && period.month === selectedMonth) ?? null,
@@ -413,6 +423,93 @@ export default function BillingApplication() {
     }
   }
 
+  /**
+   * Consulta o histórico. `requestId` descarta qualquer resposta que não seja
+   * mais a mais recente: sem isso, uma resposta lenta disparada por uma busca
+   * antiga poderia chegar depois da busca atual e sobrescrever o resultado
+   * certo com um errado.
+   */
+  function currentChargeHistoryFilters(): ChargeHistoryScreenFilters {
+    return {
+      search: chargeHistorySearch,
+      environment: chargeHistoryEnvironment,
+      payment: chargeHistoryPayment,
+    };
+  }
+
+  async function refreshChargeHistory(filters: ChargeHistoryScreenFilters = currentChargeHistoryFilters()) {
+    const requestId = ++chargeHistoryRequestIdRef.current;
+    setIsLoadingChargeHistory(true);
+    try {
+      const entries = await api.getChargeHistory({
+        search: filters.search.trim() || undefined,
+        environment: filters.environment === "all" ? undefined : filters.environment,
+        paymentStatus: filters.payment === "all" ? undefined : filters.payment,
+      });
+      if (requestId === chargeHistoryRequestIdRef.current) {
+        setChargeHistory(entries);
+      }
+    } catch (error) {
+      if (requestId === chargeHistoryRequestIdRef.current) {
+        showError(error instanceof Error ? error.message : "Não foi possível consultar o histórico.");
+      }
+    } finally {
+      if (requestId === chargeHistoryRequestIdRef.current) {
+        setIsLoadingChargeHistory(false);
+      }
+    }
+  }
+
+  /**
+   * O campo de busca dispara a cada tecla; sem espera, digitar "Farmava"
+   * emitiria sete requisições. Só a busca é adiada — o clique de ambiente é
+   * discreto, não digitação, e deve refletir na hora.
+   */
+  function applyChargeHistoryFilters(filters: ChargeHistoryScreenFilters) {
+    // Os filtros viajam juntos, num objeto, porque são três. Passá-los soltos
+    // como argumentos posicionais é como um clique num deles derruba o outro
+    // sem ninguém notar.
+    const onlyTheSearchChanged =
+      filters.environment === chargeHistoryEnvironment && filters.payment === chargeHistoryPayment;
+
+    setChargeHistorySearch(filters.search);
+    setChargeHistoryEnvironment(filters.environment);
+    setChargeHistoryPayment(filters.payment);
+
+    if (chargeHistorySearchTimeoutRef.current) {
+      clearTimeout(chargeHistorySearchTimeoutRef.current);
+      chargeHistorySearchTimeoutRef.current = null;
+    }
+
+    if (!onlyTheSearchChanged) {
+      void refreshChargeHistory(filters);
+      return;
+    }
+
+    chargeHistorySearchTimeoutRef.current = setTimeout(() => {
+      void refreshChargeHistory(filters);
+    }, 300);
+  }
+
+  /**
+   * Atualiza junto ao Asaas a situação das cobranças ainda em aberto. É o
+   * operador quem pede: o produto cria a cobrança e não acompanha o pagamento
+   * sozinho.
+   */
+  async function synchronizeChargeHistory() {
+    if (isSynchronizingChargeHistory) return;
+
+    setIsSynchronizingChargeHistory(true);
+    try {
+      setChargeHistory(await api.synchronizeChargeHistory(operatorId));
+      showNotice("Situação dos boletos atualizada junto ao Asaas.");
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível consultar os boletos no Asaas.");
+    } finally {
+      setIsSynchronizingChargeHistory(false);
+    }
+  }
+
   async function refreshBillingData(year: number, month: number) {
     try {
       const [draftData, batchData, invoiceData] = await Promise.all([
@@ -437,8 +534,23 @@ export default function BillingApplication() {
 
   useEffect(() => {
     void refreshData(true);
+    void refreshChargeHistory();
     // A primeira carga deve consultar a competência atual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cancela o timer da busca quando a aplicação inteira é desmontada. Note o
+  // alcance: trocar de item na barra lateral não desmonta nada — `page` é só
+  // estado local deste componente —, então um timer agendado pouco antes de sair
+  // do Histórico ainda dispara e atualiza o estado de uma tela que não está
+  // visível. É inofensivo, e tratar esse caso exigiria prender o timer ao ciclo
+  // de vida da página, o que não se paga por um efeito sem consequência.
+  useEffect(() => {
+    return () => {
+      if (chargeHistorySearchTimeoutRef.current) {
+        clearTimeout(chargeHistorySearchTimeoutRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -873,6 +985,16 @@ export default function BillingApplication() {
                 onSynchronize={() => void synchronizeFiscalInvoices()}
               />
             )}
+            {page === "chargeHistory" && (
+              <ChargeHistoryPage
+                entries={chargeHistory}
+                filters={currentChargeHistoryFilters()}
+                isLoading={isLoadingChargeHistory}
+                isSynchronizing={isSynchronizingChargeHistory}
+                onFiltersChange={applyChargeHistoryFilters}
+                onSynchronize={() => void synchronizeChargeHistory()}
+              />
+            )}
             {page === "integrations" && <IntegrationsPage status={integrationStatus} activeCatalogCompanyCount={activeCatalogCompanyCount} latestImport={latestCatalogImport} onOpenCatalog={() => setPage("companies")} onImportCatalog={() => setPage("companyCatalogImport")} />}
           </div>
         </div>
@@ -912,6 +1034,7 @@ function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }
     { page: "companies", label: "Empresas", icon: Building2 },
     { page: "charges", label: "Cobranças", icon: CreditCard },
     { page: "fiscalInvoices", label: "Notas fiscais", icon: ReceiptText },
+    { page: "chargeHistory", label: "Histórico", icon: CalendarDays },
     { page: "integrations", label: "Integrações", icon: Wifi },
   ];
 
@@ -2301,6 +2424,40 @@ function BatchCard({ batch, chargeCreationEnabled, onApprove, onExecute }: {
     <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-4"><span className="text-xs font-bold text-slate-500">{batch.asaasEnvironment}</span>{batch.status === "AwaitingApproval" && <button className="button-secondary h-9" onClick={onApprove}>Aprovar</button>}{batch.status === "Approved" && (chargeCreationEnabled ? <button className="button-primary h-9" onClick={onExecute}>Executar</button> : <span className="text-xs font-bold text-amber-700">Emissão bloqueada</span>)}{batch.status !== "AwaitingApproval" && batch.status !== "Approved" && <span className="text-xs text-slate-500">{batch.approvedBy ? `Aprovado por ${batch.approvedBy}` : ""}</span>}</div></article>;
 }
 
+/// Rótulos do boleto. "Não consultado" não é o mesmo que "em aberto": o
+/// primeiro diz que ninguém perguntou ao Asaas, o segundo é resposta dele. Uma
+/// cobrança recém-emitida cai no primeiro, e chamá-la de "em aberto" faria a
+/// tela afirmar que o cliente não pagou sem ter olhado.
+/// Chaves do filtro de situação, iguais às que o backend traduz. "paid" cobre
+/// `Received` e `Confirmed`, os dois estados que o Asaas usa para o que o
+/// operador chama de pago.
+type ChargePaymentFilterKey = "all" | "pending" | "paid" | "overdue";
+
+interface ChargeHistoryScreenFilters {
+  search: string;
+  environment: AsaasEnvironment | "all";
+  payment: ChargePaymentFilterKey;
+}
+
+const chargePaymentLabels: Record<string, string> = {
+  Unknown: "Não consultado",
+  Pending: "Em aberto",
+  Received: "Pago",
+  Confirmed: "Pago",
+  Overdue: "Vencido",
+  RefundRequested: "Estorno solicitado",
+  Refunded: "Estornado",
+};
+
+function chargePaymentBadge(paymentStatus: string): string {
+  if (paymentStatus === "Received" || paymentStatus === "Confirmed") return "bg-emerald-50 text-emerald-700";
+  if (paymentStatus === "Overdue") return "bg-red-50 text-red-700";
+  if (paymentStatus === "Refunded") return "bg-slate-100 text-slate-600";
+  // Inclui "não consultado" e "estorno solicitado": os dois são estados em
+  // movimento, e nenhum deles merece verde nem vermelho.
+  return "bg-amber-50 text-amber-700";
+}
+
 /// Rótulos das notas. O status vem do Asaas em inglês e maiúsculas; quem lê a
 /// tela precisa saber se a nota saiu, se está a caminho ou se travou.
 const fiscalInvoiceLabels: Record<string, string> = {
@@ -2462,6 +2619,178 @@ function FiscalInvoicesPage({
         </div>
       </>
     )}
+  </section>;
+}
+
+function ChargeHistoryPage({ entries, filters, isLoading, isSynchronizing, onFiltersChange, onSynchronize }: {
+  entries: ChargeHistoryEntry[];
+  filters: ChargeHistoryScreenFilters;
+  isLoading: boolean;
+  isSynchronizing: boolean;
+  onFiltersChange: (filters: ChargeHistoryScreenFilters) => void;
+  onSynchronize: () => void;
+}) {
+  const environmentOptions: Array<{ key: AsaasEnvironment | "all"; label: string }> = [
+    { key: "all", label: "Todos" },
+    { key: "Sandbox", label: "Teste" },
+    { key: "Production", label: "Real" },
+  ];
+  const paymentOptions: Array<{ key: ChargePaymentFilterKey; label: string }> = [
+    { key: "all", label: "Todos" },
+    { key: "pending", label: "Em aberto" },
+    { key: "paid", label: "Pago" },
+    { key: "overdue", label: "Vencido" },
+  ];
+  // Uma lista vazia por causa de um filtro não é a mesma coisa que uma lista
+  // vazia porque nada foi emitido ainda. Confundir as duas faria o operador
+  // achar que o sistema nunca emitiu nada, quando na verdade a busca ou o
+  // ambiente escolhido é que não têm resultado.
+  const hasActiveFilters =
+    Boolean(filters.search.trim()) || filters.environment !== "all" || filters.payment !== "all";
+
+  return <section>
+    <PageHeading
+      title="Histórico"
+      description="Cobranças emitidas por este sistema, da mais recente para a mais antiga."
+      action={entries.length > 0 ? (
+        <button className="button-secondary" disabled={isSynchronizing} onClick={onSynchronize}>
+          <RefreshCw className={isSynchronizing ? "animate-spin" : ""} size={16} />
+          Atualizar situação
+        </button>
+      ) : undefined}
+    />
+
+    <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
+      <div className="relative flex max-w-md flex-1 items-center">
+        <Search className="absolute ml-3 text-slate-400" size={17} />
+        <input
+          aria-label="Buscar por empresa ou CNPJ"
+          className="field w-full pl-10"
+          placeholder="Buscar por empresa ou CNPJ"
+          value={filters.search}
+          onChange={(event) => onFiltersChange({ ...filters, search: event.target.value })}
+        />
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {environmentOptions.map((option) => (
+          <button
+            key={option.key}
+            aria-pressed={filters.environment === option.key}
+            className={`badge ${filters.environment === option.key ? "bg-charcoal text-white" : "bg-slate-100 text-slate-700"}`}
+            onClick={() => onFiltersChange({ ...filters, environment: option.key })}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2 lg:border-l lg:border-slate-200 lg:pl-3">
+        {paymentOptions.map((option) => (
+          <button
+            key={option.key}
+            aria-pressed={filters.payment === option.key}
+            className={`badge ${filters.payment === option.key ? "bg-charcoal text-white" : "bg-slate-100 text-slate-700"}`}
+            onClick={() => onFiltersChange({ ...filters, payment: option.key })}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+
+    {/* Legenda, não aviso. O escopo desta tela não muda com os dados e não há
+        nada a fazer a respeito, então um banner de alerta permanente só ensinaria
+        a ignorar alerta. Dizer isso continua necessário: sem a frase, uma lista
+        curta parece defeito para quem sabe que o painel do Asaas tem mais. */}
+    <p className="mb-4 text-sm text-slate-500">
+      Aqui aparecem apenas as cobranças emitidas por este sistema. As criadas
+      diretamente no painel do Asaas continuam só lá.
+    </p>
+
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="min-w-[1100px] w-full text-left text-sm">
+          <thead className="border-b border-slate-200 bg-slate-50 text-xs font-extrabold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-5 py-3">Emissão</th>
+              <th className="px-5 py-3">Empresa</th>
+              <th className="px-5 py-3">Ambiente</th>
+              <th className="px-5 py-3 text-right">Valor</th>
+              <th className="px-5 py-3">Boleto</th>
+              <th className="px-5 py-3">Nota fiscal</th>
+              <th className="px-5 py-3 text-right">Documentos</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={`${entry.chargeBatchId}-${entry.billingDraftId}`} className="border-b border-slate-100 last:border-0">
+                <td className="px-5 py-4">
+                  <p className="font-bold">{date(entry.issuedAt)}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {monthLabel(entry.year, entry.month)} · vence {date(entry.dueDate)}
+                  </p>
+                </td>
+                <td className="px-5 py-4">
+                  <p className="font-bold">{entry.companyName}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {entry.formattedCompanyTaxId} · {entry.memberCount} pessoa(s)
+                  </p>
+                </td>
+                <td className="px-5 py-4">
+                  <span className={`badge ${entry.asaasEnvironment === "Production" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"}`}>
+                    {entry.asaasEnvironment === "Production" ? "Real" : "Teste"}
+                  </span>
+                </td>
+                <td className="px-5 py-4 text-right font-extrabold">{money(entry.totalAmount)}</td>
+                <td className="px-5 py-4">
+                  <span className={`badge ${chargePaymentBadge(entry.paymentStatus)}`}>
+                    {chargePaymentLabels[entry.paymentStatus] ?? entry.paymentStatus}
+                  </span>
+                  {entry.paidAt && <p className="mt-1 text-xs text-slate-500">em {date(entry.paidAt)}</p>}
+                </td>
+                <td className="px-5 py-4">
+                  {entry.fiscalInvoiceStatus ? (
+                    <span className={`badge ${fiscalInvoiceBadge(entry.fiscalInvoiceStatus)}`}>
+                      {fiscalInvoiceLabel(entry.fiscalInvoiceStatus)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">Não emitida</span>
+                  )}
+                </td>
+                <td className="px-5 py-4">
+                  <div className="flex justify-end gap-3">
+                    {entry.bankSlipUrl && (
+                      <a className="inline-flex items-center gap-1.5 text-sm font-extrabold text-orange hover:underline"
+                        href={entry.bankSlipUrl} target="_blank" rel="noopener noreferrer">
+                        <FileText size={15} />Boleto
+                      </a>
+                    )}
+                    {entry.fiscalInvoicePdfUrl && (
+                      <a className="inline-flex items-center gap-1.5 text-sm font-extrabold text-orange hover:underline"
+                        href={entry.fiscalInvoicePdfUrl} target="_blank" rel="noopener noreferrer">
+                        <ReceiptText size={15} />Nota
+                      </a>
+                    )}
+                    {!entry.bankSlipUrl && !entry.fiscalInvoicePdfUrl && (
+                      <span className="text-xs text-slate-400">{entry.itemErrorMessage ? "Falhou" : "Sem documento"}</span>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {entries.length === 0 && (
+              <EmptyTable
+                colSpan={7}
+                message={isLoading
+                  ? "Consultando..."
+                  : hasActiveFilters
+                    ? "Nenhuma cobrança encontrada para esta busca ou ambiente."
+                    : "Nenhuma cobrança emitida por este sistema ainda. Execute um lote para que ela apareça aqui."}
+              />
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   </section>;
 }
 

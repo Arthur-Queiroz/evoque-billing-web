@@ -35,8 +35,15 @@ localizar um cliente já existente.
 ## Direção de interface
 
 Use o design aprovado como referência visual, sem importar funcionalidades que
-não pertencem ao MVP. A sidebar contém somente: Visão geral, Colaboradores,
-Empresas, Cobranças e Integrações.
+não pertencem ao MVP. A sidebar contém: Visão geral, Colaboradores, Empresas,
+Cobranças, Notas fiscais, Histórico e Integrações.
+
+`Histórico` lista o que este sistema emitiu, atravessando competências, com
+busca por empresa, filtro de ambiente e a situação do boleto e da nota. Ela
+existe porque achar um boleto exigia saber a competência certa e expandir um
+bloco fechado — um operador executou um lote e não encontrou o boleto que havia
+sido criado. Ela mostra apenas o que saiu daqui; cobrança criada no painel do
+Asaas continua só lá, e a tela diz isso.
 
 As telas de empresa são `CompaniesPage` (lista), `CompanyDetailPage`
 (detalhe/edição), `CompanyFormPage` (cadastro manual) e
