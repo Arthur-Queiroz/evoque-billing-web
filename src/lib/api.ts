@@ -411,8 +411,10 @@ export interface ChargeHistoryFilters {
   environment?: AsaasEnvironment;
   year?: number;
   month?: number;
-  /// Chaves que o backend traduz: unknown, pending, paid, overdue, refunded.
-  /// "paid" cobre Received e Confirmed, que a tela mostra com o mesmo rótulo.
+  /**
+   * Chaves que o backend traduz: unknown, pending, paid, overdue, refunded.
+   * "paid" cobre Received e Confirmed, que a tela mostra com o mesmo rótulo.
+   */
   paymentStatus?: string;
 }
 
