@@ -18,6 +18,10 @@ export interface IntegrationStatus {
   evoMessage: string;
 }
 
+export interface Session {
+  operatorId: string;
+}
+
 export interface EvoMembership {
   id: number;
   memberMembershipId: number;
@@ -365,7 +369,6 @@ export interface CompanyFilters {
 export interface SaveCompanyInput {
   displayName?: string | null;
   closingDay: number | null;
-  operatorId: string;
 }
 
 export interface CreateSandboxAsaasCustomerResponse {
@@ -444,6 +447,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error("Não foi possível conectar à API. Verifique sua conexão e tente novamente.");
   }
 
+  if (response.status === 401 && path !== "/api/session") {
+    window.dispatchEvent(new CustomEvent("evoque:session-expired"));
+    throw new Error("Sua sessão expirou. Entre novamente.");
+  }
+
   if (!response.ok) {
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
@@ -455,6 +463,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+async function requestWithoutResponse(path: string, options?: RequestInit): Promise<void> {
+  const response = await fetch(apiUrl(path), {
+    ...options,
+    headers: { Accept: "application/json", ...options?.headers },
+  });
+  if (!response.ok) {
+    throw new Error(`A API respondeu com erro ${response.status} ao chamar ${path}.`);
+  }
 }
 
 /** Para endpoints que respondem `204 No Content` quando ainda não há dado. */
@@ -527,6 +545,13 @@ function buildChargeHistoryQuery(filters: ChargeHistoryFilters): string {
 }
 
 export const api = {
+  getSession: () => request<Session>("/api/session"),
+  signIn: (username: string, password: string) =>
+    request<Session>("/api/session", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  signOut: () => requestWithoutResponse("/api/session", { method: "DELETE" }),
   getIntegrationStatus: () => request<IntegrationStatus>("/api/integrations"),
   getMembers: (searchTerm = "") =>
     request<EvoMemberList>(`/api/evo/members?limit=100&status=1${searchTerm ? `&name=${encodeURIComponent(searchTerm)}` : ""}`),
@@ -546,39 +571,34 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(input),
     }),
-  deactivateCatalogCompany: (taxId: string, operatorId: string) =>
+  deactivateCatalogCompany: (taxId: string) =>
     request<Company>(`/api/companies/${encodeURIComponent(taxId)}/deactivate`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
-  reactivateCatalogCompany: (taxId: string, operatorId: string) =>
+  reactivateCatalogCompany: (taxId: string) =>
     request<Company>(`/api/companies/${encodeURIComponent(taxId)}/reactivate`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
-  refreshCatalogCompanyRegistry: (taxId: string, operatorId: string) =>
+  refreshCatalogCompanyRegistry: (taxId: string) =>
     request<Company>(`/api/companies/${encodeURIComponent(taxId)}/registry-refresh`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
   synchronizeCatalogCompanyAsaasSandbox: (
     taxId: string,
     email: string,
-    operatorId: string,
   ) =>
     request<CompanyAsaasSynchronization>(
       `/api/companies/${encodeURIComponent(taxId)}/asaas/sandbox-sync`,
       {
         method: "POST",
-        body: JSON.stringify({ email, operatorId }),
+        body: JSON.stringify({ email }),
       },
     ),
-  synchronizeCatalogCompanyAsaasProduction: (taxId: string, operatorId: string) =>
+  synchronizeCatalogCompanyAsaasProduction: (taxId: string) =>
     request<CompanyAsaasSynchronization>(
       `/api/companies/${encodeURIComponent(taxId)}/asaas/production-sync`,
       {
         method: "POST",
-        body: JSON.stringify({ operatorId }),
       },
     ),
   getCatalogCompanyMembers: (taxId: string) =>
@@ -597,12 +617,10 @@ export const api = {
   },
   synchronizeCompanyCatalog: (
     file: File,
-    operatorId: string,
     completeSnapshotConfirmed: boolean,
   ) => {
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("operatorId", operatorId);
     formData.append("completeSnapshotConfirmed", String(completeSnapshotConfirmed));
     return request<CompanyCatalogImportResult>("/api/company-catalog-imports", {
       method: "POST",
@@ -612,22 +630,20 @@ export const api = {
   getLatestCompanyCatalogImport: () =>
     requestOptional<CompanyCatalogImportSummary>("/api/company-catalog-imports/latest"),
   getCompanySchedules: () => request<CompanySchedule[]>("/api/company-billing-schedules"),
-  saveCompanySchedule: (externalCompanyId: string, closingDay: number, operatorId: string) =>
+  saveCompanySchedule: (externalCompanyId: string, closingDay: number) =>
     request<CompanySchedule>(`/api/company-billing-schedules/${encodeURIComponent(externalCompanyId)}`, {
       method: "PUT",
-      body: JSON.stringify({ closingDay, isActive: true, operatorId }),
+      body: JSON.stringify({ closingDay, isActive: true }),
     }),
   getBillingPeriods: () => request<BillingPeriod[]>("/api/billing-periods"),
-  createBillingPeriod: (year: number, month: number, operatorId: string) =>
+  createBillingPeriod: (year: number, month: number) =>
     request<BillingPeriod>(`/api/billing-periods/${year}/${month}`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
   getBillingDrafts: (year: number, month: number) => request<BillingDraft[]>(`/api/billing-periods/${year}/${month}/drafts`),
-  approveBillingDraft: (billingDraftId: string, operatorId: string) =>
+  approveBillingDraft: (billingDraftId: string) =>
     request<BillingDraft>(`/api/billing-drafts/${billingDraftId}/approve`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
   getChargeBatches: (year: number, month: number) =>
     request<ChargeBatch[]>(`/api/billing-periods/${year}/${month}/charge-batches`),
@@ -635,11 +651,10 @@ export const api = {
     billingDraftIds: string[],
     dueDate: string,
     asaasEnvironment: AsaasEnvironment,
-    operatorId: string,
   ) =>
     request<ChargeBatch>("/api/charge-batches/previews", {
       method: "POST",
-      body: JSON.stringify({ billingDraftIds, dueDate, asaasEnvironment, operatorId }),
+      body: JSON.stringify({ billingDraftIds, dueDate, asaasEnvironment }),
     }),
   createScheduledChargeBatchPreview: (
     year: number,
@@ -647,33 +662,30 @@ export const api = {
     closingDay: number,
     dueDate: string,
     asaasEnvironment: AsaasEnvironment,
-    operatorId: string,
   ) =>
     request<ChargeBatch>(`/api/billing-periods/${year}/${month}/scheduled-charge-batches/previews`, {
       method: "POST",
-      body: JSON.stringify({ closingDay, dueDate, asaasEnvironment, operatorId }),
+      body: JSON.stringify({ closingDay, dueDate, asaasEnvironment }),
     }),
-  approveChargeBatch: (chargeBatchId: string, operatorId: string) =>
+  approveChargeBatch: (chargeBatchId: string) =>
     request<ChargeBatch>(`/api/charge-batches/${chargeBatchId}/approve`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
-  executeChargeBatch: (chargeBatchId: string, operatorId: string) =>
+  executeChargeBatch: (chargeBatchId: string) =>
     request<ChargeBatch>(`/api/charge-batches/${chargeBatchId}/execute`, {
       method: "POST",
-      body: JSON.stringify({ operatorId, confirmationPhrase: "CONFIRMAR" }),
+      body: JSON.stringify({ confirmationPhrase: "CONFIRMAR" }),
     }),
   getFiscalInvoices: (year: number, month: number) =>
     request<FiscalInvoice[]>(`/api/billing-periods/${year}/${month}/fiscal-invoices`),
-  synchronizeFiscalInvoices: (year: number, month: number, operatorId: string) =>
+  synchronizeFiscalInvoices: (year: number, month: number) =>
     request<FiscalInvoice[]>(`/api/billing-periods/${year}/${month}/fiscal-invoices/synchronize`, {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
-  reissueFiscalInvoice: (fiscalInvoiceId: string, operatorId: string) =>
+  reissueFiscalInvoice: (fiscalInvoiceId: string) =>
     request<FiscalInvoice>(`/api/fiscal-invoices/${fiscalInvoiceId}/reissue`, {
       method: "POST",
-      body: JSON.stringify({ operatorId, confirmationPhrase: "CONFIRMAR" }),
+      body: JSON.stringify({ confirmationPhrase: "CONFIRMAR" }),
     }),
   getAsaasCustomers: (searchTerm: string) =>
     request<AsaasCustomersResponse>(`/api/asaas/customers?limit=25&searchTerm=${encodeURIComponent(searchTerm)}`),
@@ -694,12 +706,10 @@ export const api = {
     year: number,
     month: number,
     file: File,
-    operatorId: string,
     asaasCustomerId: string,
   ) => {
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("operatorId", operatorId);
     formData.append("asaasCustomerId", asaasCustomerId);
     return request<BillingSpreadsheetDraftImport>(
       `/api/billing-periods/${year}/${month}/spreadsheet-imports/drafts`,
@@ -708,9 +718,8 @@ export const api = {
   },
   getChargeHistory: (filters: ChargeHistoryFilters = {}) =>
     request<ChargeHistoryEntry[]>(`/api/charge-history${buildChargeHistoryQuery(filters)}`),
-  synchronizeChargeHistory: (operatorId: string) =>
+  synchronizeChargeHistory: () =>
     request<ChargeHistoryEntry[]>("/api/charge-history/synchronize", {
       method: "POST",
-      body: JSON.stringify({ operatorId }),
     }),
 };

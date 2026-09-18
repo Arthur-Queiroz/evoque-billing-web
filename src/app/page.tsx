@@ -49,6 +49,7 @@ import {
   IntegrationStatus,
   BillingSpreadsheetPreview,
   FiscalInvoice,
+  Session,
 } from "@/lib/api";
 
 type Page =
@@ -120,7 +121,6 @@ function registryStatusLabel(company: Company): string {
   return labels[company.registryLookupStatus];
 }
 
-const operatorId = "operador-web";
 const closingDays = [2, 18, 20, 25];
 
 /// "Sandbox" e "Production" são nomes da API do Asaas e não dizem nada a quem
@@ -242,6 +242,55 @@ function getDraftTotal(drafts: BillingDraft[]): number {
   return drafts.reduce((total, draft) => total + draft.totalAmount, 0);
 }
 
+function LoginPage({ isSigningIn, onSignIn }: {
+  isSigningIn: boolean;
+  onSignIn: (username: string, password: string) => void;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  return <main className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+    <form
+      className="panel w-full max-w-sm p-7"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSignIn(username, password);
+      }}
+    >
+      <h1 className="text-xl font-extrabold">Evoque Cobranças</h1>
+      <p className="mt-1 text-sm text-slate-500">Entre para continuar.</p>
+
+      <label className="mt-6 block text-sm font-bold" htmlFor="username">Usuário</label>
+      <input
+        autoComplete="username"
+        autoFocus
+        className="field mt-1.5 w-full"
+        id="username"
+        onChange={(event) => setUsername(event.target.value)}
+        value={username}
+      />
+
+      <label className="mt-4 block text-sm font-bold" htmlFor="password">Senha</label>
+      <input
+        autoComplete="current-password"
+        className="field mt-1.5 w-full"
+        id="password"
+        onChange={(event) => setPassword(event.target.value)}
+        type="password"
+        value={password}
+      />
+
+      <button
+        className="button-primary mt-6 w-full justify-center"
+        disabled={isSigningIn || !username || !password}
+        type="submit"
+      >
+        {isSigningIn ? "Entrando..." : "Entrar"}
+      </button>
+    </form>
+  </main>;
+}
+
 export default function BillingApplication() {
   const currentDate = new Date();
   const [page, setPage] = useState<Page>("overview");
@@ -250,6 +299,9 @@ export default function BillingApplication() {
   const [environment, setEnvironment] = useState<AsaasEnvironment>("Sandbox");
   const [pendingEnvironment, setPendingEnvironment] = useState<AsaasEnvironment | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   // Conjuntos de dados que a última atualização não conseguiu carregar. Um
   // número que não veio da API é exibido como "—", nunca como zero: "0 empresas"
   // é uma afirmação, e afirmar que o catálogo está vazio quando ele tem 63
@@ -501,7 +553,7 @@ export default function BillingApplication() {
 
     setIsSynchronizingChargeHistory(true);
     try {
-      setChargeHistory(await api.synchronizeChargeHistory(operatorId));
+      setChargeHistory(await api.synchronizeChargeHistory());
       showNotice("Situação dos boletos atualizada junto ao Asaas.");
     } catch (error) {
       showError(error instanceof Error ? error.message : "Não foi possível consultar os boletos no Asaas.");
@@ -533,11 +585,35 @@ export default function BillingApplication() {
   }
 
   useEffect(() => {
+    void (async () => {
+      try {
+        setSession(await api.getSession());
+      } catch {
+        // 401 é o caso normal de quem ainda não entrou.
+        setSession(null);
+      } finally {
+        setIsCheckingSession(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    function handleSessionExpired() {
+      setSession(null);
+    }
+
+    window.addEventListener("evoque:session-expired", handleSessionExpired);
+    return () => window.removeEventListener("evoque:session-expired", handleSessionExpired);
+  }, []);
+
+  useEffect(() => {
+    if (session === null) return;
+
     void refreshData(true);
     void refreshChargeHistory();
     // A primeira carga deve consultar a competência atual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [session]);
 
   // Cancela o timer da busca quando a aplicação inteira é desmontada. Note o
   // alcance: trocar de item na barra lateral não desmonta nada — `page` é só
@@ -554,9 +630,11 @@ export default function BillingApplication() {
   }, []);
 
   useEffect(() => {
+    if (session === null) return;
+
     void refreshBillingData(selectedYear, selectedMonth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMonth, selectedYear]);
+  }, [selectedMonth, selectedYear, session]);
 
   // As mensagens ficam no topo, e vários botões estão bem abaixo na rolagem.
   // Sem isto, uma ação recusada pela API parece não ter feito nada: o operador
@@ -568,6 +646,25 @@ export default function BillingApplication() {
 
     messageAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [shownMessageCount]);
+
+  async function signIn(username: string, password: string) {
+    setIsSigningIn(true);
+    try {
+      setSession(await api.signIn(username, password));
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível entrar.");
+    } finally {
+      setIsSigningIn(false);
+    }
+  }
+
+  async function signOut() {
+    try {
+      await api.signOut();
+    } finally {
+      setSession(null);
+    }
+  }
 
   function selectEnvironment(targetEnvironment: AsaasEnvironment) {
     if (targetEnvironment === environment) {
@@ -598,7 +695,7 @@ export default function BillingApplication() {
 
     setIsCreatingPeriod(true);
     try {
-      await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
+      await api.createBillingPeriod(selectedYear, selectedMonth);
       showNotice(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Não foi possível iniciar o faturamento.";
@@ -615,7 +712,7 @@ export default function BillingApplication() {
 
   async function createSelectedPeriod() {
     try {
-      await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
+      await api.createBillingPeriod(selectedYear, selectedMonth);
       showNotice(`Competência ${monthLabel(selectedYear, selectedMonth)} criada.`);
       await refreshData();
     } catch (error) {
@@ -625,7 +722,7 @@ export default function BillingApplication() {
 
   async function saveCompany(taxId: string, input: CompanyFormValues) {
     try {
-      const savedCompany = await api.updateCatalogCompany(taxId, { ...input, operatorId });
+      const savedCompany = await api.updateCatalogCompany(taxId, input);
       showNotice(`Empresa ${savedCompany.displayName} salva.`);
       await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
     } catch (error) {
@@ -635,7 +732,7 @@ export default function BillingApplication() {
 
   async function createCompany(taxId: string, input: CompanyFormValues) {
     try {
-      const createdCompany = await api.createCatalogCompany(taxId, { ...input, operatorId });
+      const createdCompany = await api.createCatalogCompany(taxId, input);
       showNotice(`Empresa ${createdCompany.displayName} cadastrada.`);
       await Promise.all([refreshCatalogCompanies(), api.getCompanySchedules().then(setSchedules)]);
       setSelectedCompanyTaxId(createdCompany.taxId);
@@ -648,8 +745,8 @@ export default function BillingApplication() {
   async function changeCompanyStatus(company: Company, activate: boolean) {
     try {
       const updatedCompany = activate
-        ? await api.reactivateCatalogCompany(company.taxId, operatorId)
-        : await api.deactivateCatalogCompany(company.taxId, operatorId);
+        ? await api.reactivateCatalogCompany(company.taxId)
+        : await api.deactivateCatalogCompany(company.taxId);
       showNotice(
         activate
           ? `Empresa ${updatedCompany.displayName} reativada.`
@@ -663,7 +760,7 @@ export default function BillingApplication() {
 
   async function refreshCompanyRegistry(company: Company) {
     try {
-      const updatedCompany = await api.refreshCatalogCompanyRegistry(company.taxId, operatorId);
+      const updatedCompany = await api.refreshCatalogCompanyRegistry(company.taxId);
       showNotice(`Dados cadastrais atualizados: ${registryStatusLabel(updatedCompany)}.`);
       await refreshCatalogCompanies();
     } catch (error) {
@@ -676,7 +773,6 @@ export default function BillingApplication() {
       const synchronization = await api.synchronizeCatalogCompanyAsaasSandbox(
         company.taxId,
         email,
-        operatorId,
       );
       showNotice(synchronization.message);
       await refreshCatalogCompanies();
@@ -692,7 +788,6 @@ export default function BillingApplication() {
     try {
       const synchronization = await api.synchronizeCatalogCompanyAsaasProduction(
         company.taxId,
-        operatorId,
       );
       if (synchronization.status === "Linked") {
         showNotice(synchronization.message);
@@ -721,14 +816,13 @@ export default function BillingApplication() {
           Number(scheduleDay),
           resolvedDueDate,
           environment,
-          operatorId,
         );
       } else {
         if (selectedDraftIds.length === 0) {
           showError("Selecione ao menos uma prévia aprovada.");
           return;
         }
-        await api.createChargeBatchPreview(selectedDraftIds, resolvedDueDate, environment, operatorId);
+        await api.createChargeBatchPreview(selectedDraftIds, resolvedDueDate, environment);
       }
       showNotice("Prévia criada. Nenhuma cobrança foi enviada ao Asaas.");
       await refreshBillingData(selectedYear, selectedMonth);
@@ -739,7 +833,7 @@ export default function BillingApplication() {
 
   async function approveBatch(chargeBatch: ChargeBatch) {
     try {
-      await api.approveChargeBatch(chargeBatch.id, operatorId);
+      await api.approveChargeBatch(chargeBatch.id);
       showNotice("Lote aprovado. A execução ainda exige confirmação explícita.");
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
@@ -749,7 +843,7 @@ export default function BillingApplication() {
 
   async function approveDraft(billingDraftId: string) {
     try {
-      await api.approveBillingDraft(billingDraftId, operatorId);
+      await api.approveBillingDraft(billingDraftId);
       showNotice("Prévia aprovada. Agora ela pode ser incluída em um lote Sandbox.");
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
@@ -766,7 +860,7 @@ export default function BillingApplication() {
       return;
     }
     try {
-      await api.executeChargeBatch(confirmationBatch.id, operatorId);
+      await api.executeChargeBatch(confirmationBatch.id);
       setConfirmationBatch(null);
       setConfirmationText("");
       showNotice(`Lote executado no ambiente ${environmentLabel(environment)}.`);
@@ -781,7 +875,7 @@ export default function BillingApplication() {
 
     setIsSynchronizingInvoices(true);
     try {
-      const updatedInvoices = await api.synchronizeFiscalInvoices(selectedYear, selectedMonth, operatorId);
+      const updatedInvoices = await api.synchronizeFiscalInvoices(selectedYear, selectedMonth);
       setFiscalInvoices(updatedInvoices);
       showNotice("Situação das notas atualizada junto ao Asaas.");
     } catch (error) {
@@ -793,7 +887,7 @@ export default function BillingApplication() {
 
   async function reissueFiscalInvoice(fiscalInvoice: FiscalInvoice) {
     try {
-      await api.reissueFiscalInvoice(fiscalInvoice.id, operatorId);
+      await api.reissueFiscalInvoice(fiscalInvoice.id);
       showNotice("Nova nota solicitada ao Asaas. Atualize a situação em seguida para ver o desfecho.");
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
@@ -807,6 +901,19 @@ export default function BillingApplication() {
     0,
   );
 
+  if (isCheckingSession) {
+    return <main className="flex min-h-screen items-center justify-center text-sm text-slate-500">
+      Carregando...
+    </main>;
+  }
+
+  if (session === null) {
+    return <>
+      {errorMessage && <div className="mx-auto max-w-sm pt-6"><Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout></div>}
+      <LoginPage isSigningIn={isSigningIn} onSignIn={(username, password) => void signIn(username, password)} />
+    </>;
+  }
+
   if (isLoading) {
     return <LoadingScreen />;
   }
@@ -818,7 +925,9 @@ export default function BillingApplication() {
           chargeCreationEnabled={selectedEnvironmentStatus?.chargeCreationEnabled ?? false}
           currentPage={page}
           environment={environment}
+          operatorId={session.operatorId}
           onNavigate={setPage}
+          onSignOut={() => void signOut()}
         />
         <div className="min-w-0 flex-1">
           <Header
@@ -1022,11 +1131,13 @@ export default function BillingApplication() {
   );
 }
 
-function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }: {
+function Sidebar({ chargeCreationEnabled, currentPage, environment, operatorId, onNavigate, onSignOut }: {
   chargeCreationEnabled: boolean;
   currentPage: Page;
   environment: AsaasEnvironment;
+  operatorId: string;
   onNavigate: (page: Page) => void;
+  onSignOut: () => void;
 }) {
   const items: Array<{ page: Page; label: string; icon: typeof LayoutDashboard }> = [
     { page: "overview", label: "Visão geral", icon: LayoutDashboard },
@@ -1070,6 +1181,13 @@ function Sidebar({ chargeCreationEnabled, currentPage, environment, onNavigate }
               ? "Ambiente autorizado para cobranças reais."
               : "Consulta de clientes reais — emissão bloqueada."}
         </p>
+      </div>
+      <div className="mt-4 border-t border-zinc-700 pt-4">
+        <p className="px-3 text-xs font-bold uppercase tracking-wide text-zinc-500">Operador</p>
+        <p className="mt-1 px-3 text-sm font-bold text-white">{operatorId}</p>
+        <button className="mt-2 px-3 text-sm font-bold text-zinc-400 hover:text-white" onClick={onSignOut}>
+          Sair
+        </button>
       </div>
     </aside>
   );
@@ -1361,7 +1479,7 @@ function SpreadsheetImportPage({
     try {
       if (!hasPeriod) {
         try {
-          await api.createBillingPeriod(selectedYear, selectedMonth, operatorId);
+          await api.createBillingPeriod(selectedYear, selectedMonth);
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
           if (!message.includes("409") && !message.toLocaleLowerCase("pt-BR").includes("já")) {
@@ -1374,7 +1492,6 @@ function SpreadsheetImportPage({
       const customerResult = await api.synchronizeCatalogCompanyAsaasSandbox(
         company.companyTaxId,
         sandboxEmail.trim(),
-        operatorId,
       );
       if (!customerResult.customerId) {
         throw new Error("O cliente de teste não pôde ser vinculado ao catálogo da empresa.");
@@ -1383,7 +1500,6 @@ function SpreadsheetImportPage({
         selectedYear,
         selectedMonth,
         spreadsheetFile,
-        operatorId,
         customerResult.customerId,
       );
       await onImported(
@@ -2201,7 +2317,6 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
     try {
       const synchronization = await api.synchronizeCompanyCatalog(
         selectedFile,
-        operatorId,
         completeSnapshotConfirmed,
       );
       setResult(synchronization);
