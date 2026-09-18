@@ -2435,6 +2435,15 @@ function FiscalInvoicesPage({
                         <button className="button-secondary h-9" onClick={() => onReissue(invoice)}>
                           <RefreshCw size={15} />Reemitir
                         </button>
+                      ) : invoice.pdfUrl ? (
+                        <a
+                          className="inline-flex items-center gap-1.5 text-sm font-extrabold text-orange hover:underline"
+                          href={invoice.pdfUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <FileText size={15} />Abrir nota
+                        </a>
                       ) : (
                         <span className="text-xs font-semibold text-slate-400">Sem ação</span>
                       )}

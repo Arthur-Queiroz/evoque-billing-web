@@ -160,6 +160,8 @@ export interface FiscalInvoice {
   retainsIss: boolean;
   serviceDescription: string;
   errorMessage: string | null;
+  pdfUrl: string | null;
+  xmlUrl: string | null;
   createdAt: string;
   updatedAt: string;
 }
