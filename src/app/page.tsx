@@ -288,6 +288,8 @@ export default function BillingApplication() {
   const [chargeHistory, setChargeHistory] = useState<ChargeHistoryEntry[]>([]);
   const [chargeHistorySearch, setChargeHistorySearch] = useState("");
   const [chargeHistoryEnvironment, setChargeHistoryEnvironment] = useState<AsaasEnvironment | "all">("all");
+  const [chargeHistoryPayment, setChargeHistoryPayment] = useState<ChargePaymentFilterKey>("all");
+  const [isSynchronizingChargeHistory, setIsSynchronizingChargeHistory] = useState(false);
   const [isLoadingChargeHistory, setIsLoadingChargeHistory] = useState(false);
   const chargeHistorySearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeHistoryRequestIdRef = useRef(0);
@@ -427,16 +429,22 @@ export default function BillingApplication() {
    * antiga poderia chegar depois da busca atual e sobrescrever o resultado
    * certo com um errado.
    */
-  async function refreshChargeHistory(
-    search: string = chargeHistorySearch,
-    environmentFilter: AsaasEnvironment | "all" = chargeHistoryEnvironment,
-  ) {
+  function currentChargeHistoryFilters(): ChargeHistoryScreenFilters {
+    return {
+      search: chargeHistorySearch,
+      environment: chargeHistoryEnvironment,
+      payment: chargeHistoryPayment,
+    };
+  }
+
+  async function refreshChargeHistory(filters: ChargeHistoryScreenFilters = currentChargeHistoryFilters()) {
     const requestId = ++chargeHistoryRequestIdRef.current;
     setIsLoadingChargeHistory(true);
     try {
       const entries = await api.getChargeHistory({
-        search: search.trim() || undefined,
-        environment: environmentFilter === "all" ? undefined : environmentFilter,
+        search: filters.search.trim() || undefined,
+        environment: filters.environment === "all" ? undefined : filters.environment,
+        paymentStatus: filters.payment === "all" ? undefined : filters.payment,
       });
       if (requestId === chargeHistoryRequestIdRef.current) {
         setChargeHistory(entries);
@@ -457,24 +465,49 @@ export default function BillingApplication() {
    * emitiria sete requisições. Só a busca é adiada — o clique de ambiente é
    * discreto, não digitação, e deve refletir na hora.
    */
-  function applyChargeHistoryFilters(search: string, environmentFilter: AsaasEnvironment | "all") {
-    const isEnvironmentChange = environmentFilter !== chargeHistoryEnvironment;
-    setChargeHistorySearch(search);
-    setChargeHistoryEnvironment(environmentFilter);
+  function applyChargeHistoryFilters(filters: ChargeHistoryScreenFilters) {
+    // Os filtros viajam juntos, num objeto, porque são três. Passá-los soltos
+    // como argumentos posicionais é como um clique num deles derruba o outro
+    // sem ninguém notar.
+    const onlyTheSearchChanged =
+      filters.environment === chargeHistoryEnvironment && filters.payment === chargeHistoryPayment;
+
+    setChargeHistorySearch(filters.search);
+    setChargeHistoryEnvironment(filters.environment);
+    setChargeHistoryPayment(filters.payment);
 
     if (chargeHistorySearchTimeoutRef.current) {
       clearTimeout(chargeHistorySearchTimeoutRef.current);
       chargeHistorySearchTimeoutRef.current = null;
     }
 
-    if (isEnvironmentChange) {
-      void refreshChargeHistory(search, environmentFilter);
+    if (!onlyTheSearchChanged) {
+      void refreshChargeHistory(filters);
       return;
     }
 
     chargeHistorySearchTimeoutRef.current = setTimeout(() => {
-      void refreshChargeHistory(search, environmentFilter);
+      void refreshChargeHistory(filters);
     }, 300);
+  }
+
+  /**
+   * Atualiza junto ao Asaas a situação das cobranças ainda em aberto. É o
+   * operador quem pede: o produto cria a cobrança e não acompanha o pagamento
+   * sozinho.
+   */
+  async function synchronizeChargeHistory() {
+    if (isSynchronizingChargeHistory) return;
+
+    setIsSynchronizingChargeHistory(true);
+    try {
+      setChargeHistory(await api.synchronizeChargeHistory(operatorId));
+      showNotice("Situação dos boletos atualizada junto ao Asaas.");
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível consultar os boletos no Asaas.");
+    } finally {
+      setIsSynchronizingChargeHistory(false);
+    }
   }
 
   async function refreshBillingData(year: number, month: number) {
@@ -955,10 +988,11 @@ export default function BillingApplication() {
             {page === "chargeHistory" && (
               <ChargeHistoryPage
                 entries={chargeHistory}
-                environmentFilter={chargeHistoryEnvironment}
+                filters={currentChargeHistoryFilters()}
                 isLoading={isLoadingChargeHistory}
-                search={chargeHistorySearch}
+                isSynchronizing={isSynchronizingChargeHistory}
                 onFiltersChange={applyChargeHistoryFilters}
+                onSynchronize={() => void synchronizeChargeHistory()}
               />
             )}
             {page === "integrations" && <IntegrationsPage status={integrationStatus} activeCatalogCompanyCount={activeCatalogCompanyCount} latestImport={latestCatalogImport} onOpenCatalog={() => setPage("companies")} onImportCatalog={() => setPage("companyCatalogImport")} />}
@@ -2394,6 +2428,17 @@ function BatchCard({ batch, chargeCreationEnabled, onApprove, onExecute }: {
 /// primeiro diz que ninguém perguntou ao Asaas, o segundo é resposta dele. Uma
 /// cobrança recém-emitida cai no primeiro, e chamá-la de "em aberto" faria a
 /// tela afirmar que o cliente não pagou sem ter olhado.
+/// Chaves do filtro de situação, iguais às que o backend traduz. "paid" cobre
+/// `Received` e `Confirmed`, os dois estados que o Asaas usa para o que o
+/// operador chama de pago.
+type ChargePaymentFilterKey = "all" | "pending" | "paid" | "overdue";
+
+interface ChargeHistoryScreenFilters {
+  search: string;
+  environment: AsaasEnvironment | "all";
+  payment: ChargePaymentFilterKey;
+}
+
 const chargePaymentLabels: Record<string, string> = {
   Unknown: "Não consultado",
   Pending: "Em aberto",
@@ -2577,46 +2622,74 @@ function FiscalInvoicesPage({
   </section>;
 }
 
-function ChargeHistoryPage({ entries, environmentFilter, isLoading, search, onFiltersChange }: {
+function ChargeHistoryPage({ entries, filters, isLoading, isSynchronizing, onFiltersChange, onSynchronize }: {
   entries: ChargeHistoryEntry[];
-  environmentFilter: AsaasEnvironment | "all";
+  filters: ChargeHistoryScreenFilters;
   isLoading: boolean;
-  search: string;
-  onFiltersChange: (search: string, environmentFilter: AsaasEnvironment | "all") => void;
+  isSynchronizing: boolean;
+  onFiltersChange: (filters: ChargeHistoryScreenFilters) => void;
+  onSynchronize: () => void;
 }) {
   const environmentOptions: Array<{ key: AsaasEnvironment | "all"; label: string }> = [
     { key: "all", label: "Todos" },
     { key: "Sandbox", label: "Teste" },
     { key: "Production", label: "Real" },
   ];
+  const paymentOptions: Array<{ key: ChargePaymentFilterKey; label: string }> = [
+    { key: "all", label: "Todos" },
+    { key: "pending", label: "Em aberto" },
+    { key: "paid", label: "Pago" },
+    { key: "overdue", label: "Vencido" },
+  ];
   // Uma lista vazia por causa de um filtro não é a mesma coisa que uma lista
   // vazia porque nada foi emitido ainda. Confundir as duas faria o operador
   // achar que o sistema nunca emitiu nada, quando na verdade a busca ou o
   // ambiente escolhido é que não têm resultado.
-  const hasActiveFilters = Boolean(search.trim()) || environmentFilter !== "all";
+  const hasActiveFilters =
+    Boolean(filters.search.trim()) || filters.environment !== "all" || filters.payment !== "all";
 
   return <section>
     <PageHeading
       title="Histórico"
       description="Cobranças emitidas por este sistema, da mais recente para a mais antiga."
+      action={entries.length > 0 ? (
+        <button className="button-secondary" disabled={isSynchronizing} onClick={onSynchronize}>
+          <RefreshCw className={isSynchronizing ? "animate-spin" : ""} size={16} />
+          Atualizar situação
+        </button>
+      ) : undefined}
     />
 
-    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+    <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center">
       <div className="relative flex max-w-md flex-1 items-center">
         <Search className="absolute ml-3 text-slate-400" size={17} />
         <input
+          aria-label="Buscar por empresa ou CNPJ"
           className="field w-full pl-10"
           placeholder="Buscar por empresa ou CNPJ"
-          value={search}
-          onChange={(event) => onFiltersChange(event.target.value, environmentFilter)}
+          value={filters.search}
+          onChange={(event) => onFiltersChange({ ...filters, search: event.target.value })}
         />
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {environmentOptions.map((option) => (
           <button
             key={option.key}
-            className={`badge ${environmentFilter === option.key ? "bg-charcoal text-white" : "bg-slate-100 text-slate-700"}`}
-            onClick={() => onFiltersChange(search, option.key)}
+            aria-pressed={filters.environment === option.key}
+            className={`badge ${filters.environment === option.key ? "bg-charcoal text-white" : "bg-slate-100 text-slate-700"}`}
+            onClick={() => onFiltersChange({ ...filters, environment: option.key })}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2 lg:border-l lg:border-slate-200 lg:pl-3">
+        {paymentOptions.map((option) => (
+          <button
+            key={option.key}
+            aria-pressed={filters.payment === option.key}
+            className={`badge ${filters.payment === option.key ? "bg-charcoal text-white" : "bg-slate-100 text-slate-700"}`}
+            onClick={() => onFiltersChange({ ...filters, payment: option.key })}
           >
             {option.label}
           </button>

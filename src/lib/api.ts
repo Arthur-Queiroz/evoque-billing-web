@@ -411,6 +411,9 @@ export interface ChargeHistoryFilters {
   environment?: AsaasEnvironment;
   year?: number;
   month?: number;
+  /// Chaves que o backend traduz: unknown, pending, paid, overdue, refunded.
+  /// "paid" cobre Received e Confirmed, que a tela mostra com o mesmo rótulo.
+  paymentStatus?: string;
 }
 
 const configuredApiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -512,6 +515,9 @@ function buildChargeHistoryQuery(filters: ChargeHistoryFilters): string {
   }
   if (filters.month !== undefined) {
     query.set("month", String(filters.month));
+  }
+  if (filters.paymentStatus) {
+    query.set("paymentStatus", filters.paymentStatus);
   }
 
   const queryText = query.toString();
@@ -700,4 +706,9 @@ export const api = {
   },
   getChargeHistory: (filters: ChargeHistoryFilters = {}) =>
     request<ChargeHistoryEntry[]>(`/api/charge-history${buildChargeHistoryQuery(filters)}`),
+  synchronizeChargeHistory: (operatorId: string) =>
+    request<ChargeHistoryEntry[]>("/api/charge-history/synchronize", {
+      method: "POST",
+      body: JSON.stringify({ operatorId }),
+    }),
 };
