@@ -120,6 +120,9 @@ export interface BillingDraft {
   approvedAt: string | null;
   asaasPaymentId: string | null;
   bankSlipUrl: string | null;
+  cancelledBy: string | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
   items: BillingDraftItem[];
 }
 
@@ -678,6 +681,11 @@ export const api = {
   approveBillingDraft: (billingDraftId: string) =>
     request<BillingDraft>(`/api/billing-drafts/${billingDraftId}/approve`, {
       method: "POST",
+    }),
+  cancelBillingDraft: (billingDraftId: string, reason: string) =>
+    request<BillingDraft>(`/api/billing-drafts/${billingDraftId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
     }),
   getChargeBatches: (year: number, month: number) =>
     request<ChargeBatch[]>(`/api/billing-periods/${year}/${month}/charge-batches`),
