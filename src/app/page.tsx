@@ -219,6 +219,9 @@ function statusBadge(status: string): string {
   if (normalizedStatus.includes("failed") || normalizedStatus.includes("error")) {
     return "bg-red-50 text-red-700";
   }
+  if (normalizedStatus.includes("cancel")) {
+    return "bg-slate-100 text-slate-600";
+  }
   if (normalizedStatus.includes("await") || normalizedStatus.includes("pending") || normalizedStatus.includes("processing")) {
     return "bg-amber-50 text-amber-700";
   }
@@ -235,6 +238,7 @@ function readableStatus(status: string): string {
     AwaitingReview: "Aguardando revisão",
     PendingReview: "Aguardando revisão",
     ChargeCreated: "Cobrança criada",
+    Cancelled: "Cancelada",
     Draft: "Rascunho",
   };
   return labels[status] ?? status;
@@ -930,6 +934,23 @@ export default function BillingApplication() {
     }
   }
 
+  async function cancelDraft(billingDraft: BillingDraft) {
+    const reason = window.prompt(
+      `Informe o motivo para cancelar a prévia de ${billingDraft.companyName}:`,
+      "Roster da competência foi atualizado.",
+    );
+    if (!reason?.trim()) return;
+
+    try {
+      await api.cancelBillingDraft(billingDraft.id, reason.trim());
+      setSelectedDraftIds((currentIds) => currentIds.filter((id) => id !== billingDraft.id));
+      showNotice("Prévia cancelada. O histórico foi preservado e uma nova versão pode ser gerada.");
+      await refreshBillingData(selectedYear, selectedMonth);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível cancelar a prévia.");
+    }
+  }
+
   if (session === null) {
     return <>
       {errorMessage && <div className="mx-auto max-w-sm pt-6"><Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout></div>}
@@ -1096,6 +1117,7 @@ export default function BillingApplication() {
                 totalDraftValue={getDraftTotal(drafts.filter((draft) => selectedDraftIds.includes(draft.id)))}
                 onApprove={(batch) => void approveBatch(batch)}
                 onApproveDraft={(billingDraftId) => void approveDraft(billingDraftId)}
+                onCancelDraft={(billingDraft) => void cancelDraft(billingDraft)}
                 onCreatePeriod={() => void createOrRefreshSelectedPeriod()}
                 onCreatePreview={(scheduled) => void createBatchPreview(scheduled)}
                 onGenerateCorporateDrafts={() => void generateCorporateDrafts()}
@@ -1457,7 +1479,8 @@ function SpreadsheetImportPage({
   const [isImporting, setIsImporting] = useState(false);
   const previewCompany = preview?.companies.length === 1 ? preview.companies[0] : null;
   const existingCompanyDraft = previewCompany
-    ? existingDrafts.find((draft) => draft.companyTaxId === previewCompany.companyTaxId) ?? null
+    ? existingDrafts.find((draft) =>
+        draft.companyTaxId === previewCompany.companyTaxId && draft.status !== "Cancelled") ?? null
     : null;
 
   function changeCompetence(value: string) {
@@ -1693,9 +1716,9 @@ function ImportMetric({ label, value }: { label: string; value: string }) {
   return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
 }
 
-function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onToggleDraft }: {
+function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCancelDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onToggleDraft }: {
   batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; corporateDraftResult: GenerateCorporateDraftsResult | null; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; isGeneratingCorporateDrafts: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
-  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
+  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCancelDraft: (billingDraft: BillingDraft) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
 }) {
   const selectedDay = Number(scheduleDay);
   const closingDate = new Date(selectedYear, selectedMonth - 1, selectedDay);
@@ -1827,12 +1850,13 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraft
                   {drafts.map((draft) => {
                     const canSelect = draft.status === "Approved";
                     const canApprove = draft.status === "PendingReview" || draft.status === "AwaitingReview" || draft.status === "Draft";
+                    const canCancel = draft.status === "PendingReview" || draft.status === "Approved";
                     return <tr key={draft.id} className="border-b border-slate-100 last:border-0">
                       <td className="px-5 py-4"><input aria-label={`Selecionar ${draft.companyName}`} checked={selectedDraftIds.includes(draft.id)} disabled={!canSelect} type="checkbox" onChange={() => onToggleDraft(draft.id)} /></td>
                       <td className="px-5 py-4"><p className="font-bold">{draft.companyName}</p><p className="mt-0.5 text-xs text-slate-500">{draft.companyTaxId} · {draft.items.length} pessoa(s)</p></td>
                       <td className="px-5 py-4"><span className={`badge ${statusBadge(draft.status)}`}>{readableStatus(draft.status)}</span></td>
                       <td className="px-5 py-4 text-right font-extrabold">{money(draft.totalAmount)}</td>
-                      <td className="px-5 py-4 text-right">{canApprove ? <button className="button-secondary h-9" onClick={() => onApproveDraft(draft.id)}><CheckCircle2 size={16} />Aprovar prévia</button> : <span className="text-xs font-semibold text-slate-400">{canSelect ? "Pronta para o lote" : "Sem ação"}</span>}</td>
+                      <td className="px-5 py-4 text-right"><div className="flex justify-end gap-2">{canApprove && <button className="button-secondary h-9" onClick={() => onApproveDraft(draft.id)}><CheckCircle2 size={16} />Aprovar</button>}{canCancel && <button className="button-secondary h-9 text-red-700" onClick={() => onCancelDraft(draft)}>Cancelar</button>}{!canApprove && !canCancel && <span className="text-xs font-semibold text-slate-400">Sem ação</span>}</div></td>
                     </tr>;
                   })}
                   {drafts.length === 0 && <EmptyTable colSpan={5} message="Ainda não há prévias nesta competência. Gere as prévias corporativas ou importe um fechamento do EVO." />}
