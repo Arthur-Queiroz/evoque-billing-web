@@ -239,6 +239,7 @@ function readableStatus(status: string): string {
     PendingReview: "Aguardando revisão",
     ChargeCreated: "Cobrança criada",
     Cancelled: "Cancelada",
+    Superseded: "Substituída",
     Draft: "Rascunho",
   };
   return labels[status] ?? status;
@@ -951,6 +952,23 @@ export default function BillingApplication() {
     }
   }
 
+  async function supersedeSandboxDraft(billingDraft: BillingDraft) {
+    const reason = window.prompt(
+      `Informe por que a prévia de ${billingDraft.companyName} precisa ser substituída após o teste Sandbox:`,
+      "O roster correto chegou depois do teste Sandbox.",
+    );
+    if (!reason?.trim()) return;
+
+    try {
+      await api.supersedeSandboxBillingDraft(billingDraft.id, reason.trim());
+      setSelectedDraftIds((currentIds) => currentIds.filter((id) => id !== billingDraft.id));
+      showNotice("Prévia Sandbox substituída. A cobrança de teste foi preservada no histórico.");
+      await refreshBillingData(selectedYear, selectedMonth);
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "Não foi possível substituir a prévia Sandbox.");
+    }
+  }
+
   if (session === null) {
     return <>
       {errorMessage && <div className="mx-auto max-w-sm pt-6"><Callout tone="error" onDismiss={() => setErrorMessage(null)}>{errorMessage}</Callout></div>}
@@ -1118,6 +1136,7 @@ export default function BillingApplication() {
                 onApprove={(batch) => void approveBatch(batch)}
                 onApproveDraft={(billingDraftId) => void approveDraft(billingDraftId)}
                 onCancelDraft={(billingDraft) => void cancelDraft(billingDraft)}
+                onSupersedeSandboxDraft={(billingDraft) => void supersedeSandboxDraft(billingDraft)}
                 onCreatePeriod={() => void createOrRefreshSelectedPeriod()}
                 onCreatePreview={(scheduled) => void createBatchPreview(scheduled)}
                 onGenerateCorporateDrafts={() => void generateCorporateDrafts()}
@@ -1480,7 +1499,9 @@ function SpreadsheetImportPage({
   const previewCompany = preview?.companies.length === 1 ? preview.companies[0] : null;
   const existingCompanyDraft = previewCompany
     ? existingDrafts.find((draft) =>
-        draft.companyTaxId === previewCompany.companyTaxId && draft.status !== "Cancelled") ?? null
+        draft.companyTaxId === previewCompany.companyTaxId
+        && draft.status !== "Cancelled"
+        && draft.status !== "Superseded") ?? null
     : null;
 
   function changeCompetence(value: string) {
@@ -1716,9 +1737,9 @@ function ImportMetric({ label, value }: { label: string; value: string }) {
   return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
 }
 
-function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCancelDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onToggleDraft }: {
+function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCancelDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onSupersedeSandboxDraft, onToggleDraft }: {
   batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; corporateDraftResult: GenerateCorporateDraftsResult | null; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; isGeneratingCorporateDrafts: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
-  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCancelDraft: (billingDraft: BillingDraft) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onToggleDraft: (draftId: string) => void;
+  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCancelDraft: (billingDraft: BillingDraft) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onSupersedeSandboxDraft: (billingDraft: BillingDraft) => void; onToggleDraft: (draftId: string) => void;
 }) {
   const selectedDay = Number(scheduleDay);
   const closingDate = new Date(selectedYear, selectedMonth - 1, selectedDay);
@@ -1856,7 +1877,7 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraft
                       <td className="px-5 py-4"><p className="font-bold">{draft.companyName}</p><p className="mt-0.5 text-xs text-slate-500">{draft.companyTaxId} · {draft.items.length} pessoa(s)</p></td>
                       <td className="px-5 py-4"><span className={`badge ${statusBadge(draft.status)}`}>{readableStatus(draft.status)}</span></td>
                       <td className="px-5 py-4 text-right font-extrabold">{money(draft.totalAmount)}</td>
-                      <td className="px-5 py-4 text-right"><div className="flex justify-end gap-2">{canApprove && <button className="button-secondary h-9" onClick={() => onApproveDraft(draft.id)}><CheckCircle2 size={16} />Aprovar</button>}{canCancel && <button className="button-secondary h-9 text-red-700" onClick={() => onCancelDraft(draft)}>Cancelar</button>}{!canApprove && !canCancel && <span className="text-xs font-semibold text-slate-400">Sem ação</span>}</div></td>
+                      <td className="px-5 py-4 text-right"><div className="flex justify-end gap-2">{canApprove && <button className="button-secondary h-9" onClick={() => onApproveDraft(draft.id)}><CheckCircle2 size={16} />Aprovar</button>}{canCancel && <button className="button-secondary h-9 text-red-700" onClick={() => onCancelDraft(draft)}>Cancelar</button>}{draft.status === "Approved" && <button className="button-secondary h-9" onClick={() => onSupersedeSandboxDraft(draft)}>Substituir teste</button>}{!canApprove && !canCancel && <span className="text-xs font-semibold text-slate-400">Sem ação</span>}</div></td>
                     </tr>;
                   })}
                   {drafts.length === 0 && <EmptyTable colSpan={5} message="Ainda não há prévias nesta competência. Gere as prévias corporativas ou importe um fechamento do EVO." />}
