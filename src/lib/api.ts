@@ -123,6 +123,9 @@ export interface BillingDraft {
   cancelledBy: string | null;
   cancelledAt: string | null;
   cancellationReason: string | null;
+  supersededBy: string | null;
+  supersededAt: string | null;
+  supersessionReason: string | null;
   items: BillingDraftItem[];
 }
 
@@ -684,6 +687,11 @@ export const api = {
     }),
   cancelBillingDraft: (billingDraftId: string, reason: string) =>
     request<BillingDraft>(`/api/billing-drafts/${billingDraftId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  supersedeSandboxBillingDraft: (billingDraftId: string, reason: string) =>
+    request<BillingDraft>(`/api/billing-drafts/${billingDraftId}/supersede-sandbox`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
