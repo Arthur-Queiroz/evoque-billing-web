@@ -257,6 +257,7 @@ export interface Company {
   source: CompanySource;
   memberCount: number;
   amountPerMember: number | null;
+  feePerMember: number | null;
   firstSeenAt: string | null;
   lastSeenAt: string | null;
   seenInLastImport: boolean;
@@ -377,6 +378,7 @@ export interface SaveCompanyInput {
   displayName?: string | null;
   closingDay: number | null;
   amountPerMember?: number | null;
+  feePerMember?: number | null;
 }
 
 export interface GeneratedBillingDraft {
@@ -385,6 +387,7 @@ export interface GeneratedBillingDraft {
   companyName: string;
   memberCount: number;
   amountPerMember: number;
+  feePerMember: number | null;
   totalAmount: number;
 }
 
