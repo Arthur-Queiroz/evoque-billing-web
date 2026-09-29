@@ -1443,7 +1443,7 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
                   : money(company.amountPerMember)}
                 {company.feePerMember ? (
                   <div className="text-xs text-slate-500">
-                    + {money(company.feePerMember)} de taxa
+                    + {money(company.feePerMember)} de taxa por pessoa
                   </div>
                 ) : null}
               </td>
@@ -2328,6 +2328,10 @@ function CompanyDetailPage({
               }
               const normalizedFee = feePerMember.trim().replace(",", ".");
               const parsedFee = normalizedFee === "" ? null : Number(normalizedFee);
+              if (parsedFee !== null && (!Number.isFinite(parsedFee) || parsedFee <= 0)) {
+                setDetailError("Informe uma taxa por colaborador maior que zero, ou deixe o campo vazio.");
+                return;
+              }
               onSave({
                 displayName,
                 closingDay: closingDay ? Number(closingDay) : null,
