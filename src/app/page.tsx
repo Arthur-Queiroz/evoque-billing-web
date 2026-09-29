@@ -100,6 +100,7 @@ interface CompanyFormValues {
   displayName: string;
   closingDay: number | null;
   amountPerMember?: number | null;
+  feePerMember?: number | null;
 }
 
 function companySourceLabel(source: Company["source"]): string {
@@ -1440,6 +1441,11 @@ function CompaniesPage({ companies, filterKey, latestImport, search, onFiltersCh
                 {company.amountPerMember === null
                   ? <span className="badge bg-amber-50 text-amber-700">Sem valor</span>
                   : money(company.amountPerMember)}
+                {company.feePerMember ? (
+                  <div className="text-xs text-slate-500">
+                    + {money(company.feePerMember)} de taxa
+                  </div>
+                ) : null}
               </td>
               <td className="px-5 py-4 font-extrabold">{company.closingDay ? String(company.closingDay).padStart(2, "0") : "—"}</td>
               <td className="px-5 py-4 text-slate-600">{companyAsaasLabel(company)}</td>
@@ -1911,7 +1917,9 @@ function CorporateDraftGenerationResult({ result }: { result: GenerateCorporateD
           <li key={billingDraft.billingDraftId} className="flex flex-col justify-between gap-1 sm:flex-row sm:gap-4">
             <span className="font-semibold">{billingDraft.companyName}</span>
             <span className="text-slate-500">
-              {billingDraft.memberCount} &times; {money(billingDraft.amountPerMember)} = <strong>{money(billingDraft.totalAmount)}</strong>
+              {billingDraft.memberCount} &times; {money(billingDraft.amountPerMember)}
+              {billingDraft.feePerMember ? <> + {billingDraft.memberCount} &times; {money(billingDraft.feePerMember)} de taxa</> : null}
+              {" = "}<strong>{money(billingDraft.totalAmount)}</strong>
             </span>
           </li>
         ))}
@@ -2171,6 +2179,11 @@ function CompanyDetailPage({
   const [amountPerMember, setAmountPerMember] = useState(
     company.amountPerMember === null ? "" : String(company.amountPerMember).replace(".", ","),
   );
+  const [feePerMember, setFeePerMember] = useState(
+    company.feePerMember === null || company.feePerMember === undefined
+      ? ""
+      : String(company.feePerMember).replace(".", ","),
+  );
   const [sandboxEmail, setSandboxEmail] = useState(controlledSandboxEmail);
   const [isSynchronizingSandbox, setIsSynchronizingSandbox] = useState(false);
   const [isSynchronizingProduction, setIsSynchronizingProduction] = useState(false);
@@ -2183,6 +2196,11 @@ function CompanyDetailPage({
     setBillingDay(company.closingDay ? String(company.closingDay) : "");
     setAmountPerMember(
       company.amountPerMember === null ? "" : String(company.amountPerMember).replace(".", ","),
+    );
+    setFeePerMember(
+      company.feePerMember === null || company.feePerMember === undefined
+        ? ""
+        : String(company.feePerMember).replace(".", ","),
     );
   }, [company]);
 
@@ -2308,10 +2326,13 @@ function CompanyDetailPage({
                 setDetailError("Informe um valor por colaborador maior que zero.");
                 return;
               }
+              const normalizedFee = feePerMember.trim().replace(",", ".");
+              const parsedFee = normalizedFee === "" ? null : Number(normalizedFee);
               onSave({
                 displayName,
                 closingDay: closingDay ? Number(closingDay) : null,
                 amountPerMember: parsedAmount,
+                feePerMember: parsedFee,
               });
             }}
           >
@@ -2333,7 +2354,16 @@ function CompanyDetailPage({
                 onChange={(event) => setAmountPerMember(event.target.value)}
               />
             </label>
-            <p className="text-xs leading-5 text-slate-500">Este valor multiplica a quantidade de colaboradores eleg&iacute;veis ao gerar a pr&eacute;via mensal.</p>
+            <label className="block text-xs font-extrabold uppercase tracking-wide text-slate-500">Taxa administrativa por colaborador
+              <input
+                className="field mt-1.5 w-full"
+                inputMode="decimal"
+                placeholder="Sem taxa"
+                value={feePerMember}
+                onChange={(event) => setFeePerMember(event.target.value)}
+              />
+            </label>
+            <p className="text-xs leading-5 text-slate-500">O valor multiplica a quantidade de colaboradores eleg&iacute;veis ao gerar a pr&eacute;via mensal. A taxa administrativa, quando houver, &eacute; cobrada por colaborador e somada ao total.</p>
             <button className="button-primary w-full" type="submit"><CheckCircle2 size={17} />Salvar dados</button>
           </form>
           <p className="mt-4 border-t border-slate-100 pt-4 text-xs leading-5 text-slate-500">Atualizada em {date(company.updatedAt)} por {company.updatedBy}.</p>
