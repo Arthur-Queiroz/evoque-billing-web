@@ -386,6 +386,31 @@ export interface GeneratedBillingDraft {
   memberCount: number;
   amountPerMember: number;
   totalAmount: number;
+  closingDate: string | null;
+  proratedMembers: ProratedMember[];
+}
+
+export interface ProratedMember {
+  evoMemberId: number;
+  memberName: string;
+  entryDate: string;
+  billedDays: number;
+  amount: number;
+}
+
+export interface MemberOutsidePeriod {
+  evoMemberId: number;
+  memberName: string;
+  companyName: string;
+  entryDate: string;
+}
+
+export interface ProrationWarning {
+  companyTaxId: string;
+  companyName: string;
+  evoMemberId: number | null;
+  memberName: string | null;
+  message: string;
 }
 
 export interface SkippedCompany {
@@ -405,6 +430,8 @@ export interface GenerateCorporateDraftsResult {
   skipped: SkippedCompany[];
   unknownContracts: string[];
   membersWithoutCompany: MemberWithoutCompany[];
+  membersOutsidePeriod: MemberOutsidePeriod[];
+  prorationWarnings: ProrationWarning[];
 }
 
 export interface CreateSandboxAsaasCustomerResponse {
