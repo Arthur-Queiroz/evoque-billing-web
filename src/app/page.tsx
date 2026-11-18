@@ -1908,11 +1908,26 @@ function CorporateDraftGenerationResult({ result }: { result: GenerateCorporateD
       <p className="font-extrabold">{result.created.length} pr&eacute;via(s) criada(s) &middot; {money(generatedTotal)}</p>
       <ul className="mt-3 space-y-2 text-sm">
         {result.created.map((billingDraft) => (
-          <li key={billingDraft.billingDraftId} className="flex flex-col justify-between gap-1 sm:flex-row sm:gap-4">
-            <span className="font-semibold">{billingDraft.companyName}</span>
-            <span className="text-slate-500">
-              {billingDraft.memberCount} &times; {money(billingDraft.amountPerMember)} = <strong>{money(billingDraft.totalAmount)}</strong>
-            </span>
+          <li key={billingDraft.billingDraftId}>
+            <div className="flex flex-col justify-between gap-1 sm:flex-row sm:gap-4">
+              <span className="font-semibold">
+                {billingDraft.companyName}
+                {billingDraft.closingDate && <span className="font-normal text-slate-400"> &middot; fechamento {date(billingDraft.closingDate)}</span>}
+              </span>
+              <span className="text-slate-500">
+                {billingDraft.proratedMembers.length > 0
+                  ? <>{billingDraft.memberCount} colaborador(es), {billingDraft.proratedMembers.length} proporcional(is)</>
+                  : <>{billingDraft.memberCount} &times; {money(billingDraft.amountPerMember)}</>} = <strong>{money(billingDraft.totalAmount)}</strong>
+              </span>
+            </div>
+            {billingDraft.proratedMembers.length > 0 && <ul className="mt-1 space-y-0.5 pl-4 text-xs text-slate-500">
+              {billingDraft.proratedMembers.map((member) => (
+                <li key={member.evoMemberId}>
+                  {member.memberName}: entrada em {date(member.entryDate)}, {member.billedDays}/30 dias = {money(member.amount)}
+                  <span className="text-slate-400"> (cheio {money(billingDraft.amountPerMember)})</span>
+                </li>
+              ))}
+            </ul>}
           </li>
         ))}
         {result.created.length === 0 && <li className="text-slate-400">nenhuma</li>}
@@ -1940,6 +1955,27 @@ function CorporateDraftGenerationResult({ result }: { result: GenerateCorporateD
       <GenerationResultList
         title="Contratos não reconhecidos"
         items={result.unknownContracts.map((contract) => <li key={contract}>{contract}</li>)}
+      />
+      <GenerationResultList
+        title="Proporcional não verificado (cobrado cheio)"
+        items={result.prorationWarnings.map((warning, index) => (
+          <li key={`${warning.companyTaxId}-${warning.evoMemberId ?? "empresa"}-${index}`}>
+            <span className="font-semibold">
+              {warning.companyName}
+              {warning.memberName && <> &middot; {warning.memberName} <span className="font-normal text-slate-400">#{warning.evoMemberId}</span></>}
+            </span>
+            <p className="mt-0.5 text-amber-700">{warning.message}</p>
+          </li>
+        ))}
+      />
+      <GenerationResultList
+        title="Entraram depois do fechamento"
+        items={result.membersOutsidePeriod.map((member) => (
+          <li key={member.evoMemberId}>
+            {member.memberName} <span className="text-slate-400">#{member.evoMemberId}</span>
+            <p className="mt-0.5 text-slate-500">{member.companyName} &middot; entrada em {date(member.entryDate)}, cobrado na próxima competência</p>
+          </li>
+        ))}
       />
     </div>
   </div>;
