@@ -245,6 +245,10 @@ function readableStatus(status: string): string {
   return labels[status] ?? status;
 }
 
+function isDraftApprovable(status: BillingDraft["status"]): boolean {
+  return status === "PendingReview" || status === "AwaitingReview" || status === "Draft";
+}
+
 function getDraftTotal(drafts: BillingDraft[]): number {
   return drafts.reduce((total, draft) => total + draft.totalAmount, 0);
 }
@@ -344,6 +348,7 @@ export default function BillingApplication() {
   const [fiscalInvoices, setFiscalInvoices] = useState<FiscalInvoice[]>([]);
   const [isSynchronizingInvoices, setIsSynchronizingInvoices] = useState(false);
   const [selectedDraftIds, setSelectedDraftIds] = useState<string[]>([]);
+  const [isApprovingAllDrafts, setIsApprovingAllDrafts] = useState(false);
   const [confirmationBatch, setConfirmationBatch] = useState<ChargeBatch | null>(null);
   const [confirmationText, setConfirmationText] = useState("");
   const [chargeHistory, setChargeHistory] = useState<ChargeHistoryEntry[]>([]);
@@ -393,10 +398,13 @@ export default function BillingApplication() {
     setShownMessageCount((currentCount) => currentCount + 1);
   }
 
-  function showNotice(message: string) {
+  // `scroll: false` serve para ações repetidas em sequência, como aprovar prévia
+  // por prévia: o aviso aparece, mas a tela não volta ao topo a cada clique.
+  // Erros continuam rolando sempre, que é o caso que a rolagem existe para cobrir.
+  function showNotice(message: string, { scroll = true }: { scroll?: boolean } = {}) {
     setErrorMessage(null);
     setNoticeMessage(message);
-    setShownMessageCount((currentCount) => currentCount + 1);
+    if (scroll) setShownMessageCount((currentCount) => currentCount + 1);
   }
 
   async function refreshData(showLoading = false) {
@@ -854,10 +862,41 @@ export default function BillingApplication() {
   async function approveDraft(billingDraftId: string) {
     try {
       await api.approveBillingDraft(billingDraftId);
-      showNotice("Prévia aprovada. Agora ela pode ser incluída em um lote Sandbox.");
+      showNotice("Prévia aprovada. Agora ela pode ser incluída em um lote Sandbox.", { scroll: false });
       await refreshBillingData(selectedYear, selectedMonth);
     } catch (error) {
       showError(error instanceof Error ? error.message : "Não foi possível aprovar a prévia.");
+    }
+  }
+
+  // Aprova uma a uma, pelo mesmo endpoint da aprovação individual: cada prévia
+  // continua com seu próprio registro de auditoria. Uma recusa não interrompe
+  // as demais, e o resultado diz quais ficaram de fora.
+  async function approveAllPendingDrafts() {
+    const pendingDrafts = drafts.filter((draft) => isDraftApprovable(draft.status));
+    if (pendingDrafts.length === 0) return;
+    setIsApprovingAllDrafts(true);
+    const refusedCompanies: string[] = [];
+    try {
+      for (const draft of pendingDrafts) {
+        try {
+          await api.approveBillingDraft(draft.id);
+        } catch {
+          refusedCompanies.push(draft.companyName);
+        }
+      }
+      await refreshBillingData(selectedYear, selectedMonth);
+    } finally {
+      setIsApprovingAllDrafts(false);
+    }
+
+    const approvedCount = pendingDrafts.length - refusedCompanies.length;
+    if (refusedCompanies.length > 0) {
+      showError(
+        `${approvedCount} prévia(s) aprovada(s). Não foi possível aprovar: ${refusedCompanies.join(", ")}.`,
+      );
+    } else {
+      showNotice(`${approvedCount} prévia(s) aprovada(s). Agora elas podem ser incluídas em um lote.`);
     }
   }
 
@@ -1135,6 +1174,8 @@ export default function BillingApplication() {
                 totalDraftValue={getDraftTotal(drafts.filter((draft) => selectedDraftIds.includes(draft.id)))}
                 onApprove={(batch) => void approveBatch(batch)}
                 onApproveDraft={(billingDraftId) => void approveDraft(billingDraftId)}
+                isApprovingAllDrafts={isApprovingAllDrafts}
+                onApproveAllDrafts={() => void approveAllPendingDrafts()}
                 onCancelDraft={(billingDraft) => void cancelDraft(billingDraft)}
                 onSupersedeSandboxDraft={(billingDraft) => void supersedeSandboxDraft(billingDraft)}
                 onCreatePeriod={() => void createOrRefreshSelectedPeriod()}
@@ -1737,10 +1778,11 @@ function ImportMetric({ label, value }: { label: string; value: string }) {
   return <div className="bg-white px-5 py-4"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-xl font-extrabold">{value}</p></div>;
 }
 
-function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveDraft, onCancelDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onSupersedeSandboxDraft, onToggleDraft }: {
-  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; corporateDraftResult: GenerateCorporateDraftsResult | null; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; isGeneratingCorporateDrafts: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
-  onApprove: (batch: ChargeBatch) => void; onApproveDraft: (billingDraftId: string) => void; onCancelDraft: (billingDraft: BillingDraft) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onSupersedeSandboxDraft: (billingDraft: BillingDraft) => void; onToggleDraft: (draftId: string) => void;
+function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraftResult, drafts, dueDate, environment, hasPeriod, isApprovingAllDrafts, isGeneratingCorporateDrafts, scheduleDay, schedules, selectedDraftIds, selectedMonth, selectedYear, totalDraftValue, onApprove, onApproveAllDrafts, onApproveDraft, onCancelDraft, onCreatePeriod, onCreatePreview, onDueDateChange, onExecute, onGenerateCorporateDrafts, onNavigate, onScheduleDayChange, onSupersedeSandboxDraft, onToggleDraft }: {
+  batches: ChargeBatch[]; companies: Company[]; chargeCreationEnabled: boolean; corporateDraftResult: GenerateCorporateDraftsResult | null; drafts: BillingDraft[]; dueDate: string; environment: AsaasEnvironment; hasPeriod: boolean; isApprovingAllDrafts: boolean; isGeneratingCorporateDrafts: boolean; scheduleDay: string; schedules: CompanySchedule[]; selectedDraftIds: string[]; selectedMonth: number; selectedYear: number; totalDraftValue: number;
+  onApprove: (batch: ChargeBatch) => void; onApproveAllDrafts: () => void; onApproveDraft: (billingDraftId: string) => void; onCancelDraft: (billingDraft: BillingDraft) => void; onCreatePeriod: () => void; onCreatePreview: (scheduled: boolean) => void; onDueDateChange: (dueDate: string) => void; onExecute: (batch: ChargeBatch) => void; onGenerateCorporateDrafts: () => void; onNavigate: (page: Page) => void; onScheduleDayChange: (day: string) => void; onSupersedeSandboxDraft: (billingDraft: BillingDraft) => void; onToggleDraft: (draftId: string) => void;
 }) {
+  const pendingDraftCount = drafts.filter((draft) => isDraftApprovable(draft.status)).length;
   const selectedDay = Number(scheduleDay);
   const closingDate = new Date(selectedYear, selectedMonth - 1, selectedDay);
   const selectedDueDate = parseDateOnly(dueDate);
@@ -1861,6 +1903,13 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraft
           <span className="text-sm font-semibold text-slate-500">Revise, aprove e selecione</span>
         </summary>
         <div className="border-t border-slate-200 p-5">
+          {pendingDraftCount > 0 && <div className="mb-4 flex flex-col gap-3 rounded-xl bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-amber-900"><strong>{pendingDraftCount} prévia(s) aguardando revisão</strong> &middot; {money(getDraftTotal(drafts.filter((draft) => isDraftApprovable(draft.status))))}</p>
+            <button className="button-primary shrink-0" disabled={isApprovingAllDrafts} onClick={onApproveAllDrafts}>
+              {isApprovingAllDrafts ? <LoaderCircle className="animate-spin" size={17} /> : <CheckCircle2 size={17} />}
+              {isApprovingAllDrafts ? "Aprovando..." : "Aprovar todas as pendentes"}
+            </button>
+          </div>}
           <div className="grid gap-5 xl:grid-cols-[1fr_300px]">
             <div className="overflow-x-auto rounded-xl border border-slate-200">
               <table className="min-w-[760px] w-full text-left text-sm">
@@ -1870,7 +1919,7 @@ function ChargesPage({ batches, companies, chargeCreationEnabled, corporateDraft
                 <tbody>
                   {drafts.map((draft) => {
                     const canSelect = draft.status === "Approved";
-                    const canApprove = draft.status === "PendingReview" || draft.status === "AwaitingReview" || draft.status === "Draft";
+                    const canApprove = isDraftApprovable(draft.status);
                     const canCancel = draft.status === "PendingReview" || draft.status === "Approved";
                     return <tr key={draft.id} className="border-b border-slate-100 last:border-0">
                       <td className="px-5 py-4"><input aria-label={`Selecionar ${draft.companyName}`} checked={selectedDraftIds.includes(draft.id)} disabled={!canSelect} type="checkbox" onChange={() => onToggleDraft(draft.id)} /></td>
