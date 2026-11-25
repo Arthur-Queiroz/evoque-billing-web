@@ -343,12 +343,18 @@ export interface CompanyCatalogImportResult {
   importId: string;
   synchronizedAt: string;
   operatorId: string;
-  createdCompanyCount: number;
-  ignoredExistingCompanyCount: number;
-  registryEnrichedCount: number;
-  registryUnavailableCount: number;
+  linkedCompanyCount: number;
+  unregisteredCompanies: UnregisteredCompany[];
   memberComparison: CorporateMemberComparison;
   preview: CompanyCatalogImportPreview;
+}
+
+/** CNPJ da planilha que não está no catálogo. A importação nunca cria empresa. */
+export interface UnregisteredCompany {
+  taxId: string;
+  formattedTaxId: string;
+  evoName: string;
+  memberCount: number;
 }
 
 export interface CompanyCatalogImportSummary {
