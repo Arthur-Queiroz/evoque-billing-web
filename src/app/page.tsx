@@ -2528,7 +2528,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
       );
       setResult(synchronization);
       await onSynchronized(
-        `${synchronization.createdCompanyCount} empresa(s) adicionada(s). `
+        `${synchronization.linkedCompanyCount} empresa(s) vinculada(s). `
         + `${synchronization.memberComparison.newMemberCount} colaborador(es) novo(s), `
         + `${synchronization.memberComparison.departedMemberCount} inativado(s).`,
       );
@@ -2624,7 +2624,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
     {preview && (
       <>
         <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <ImportMetric label="Novas empresas" value={preview.newCompanyCount.toString()} />
+          <ImportMetric label="Fora do catálogo" value={preview.newCompanyCount.toString()} />
           <ImportMetric label="Já cadastradas" value={preview.existingCompanyCount.toString()} />
           <ImportMetric label="Pessoas encontradas" value={preview.discoveredMemberCount.toString()} />
           <ImportMetric label="CNPJs inválidos" value={preview.invalidTaxIdCount.toString()} />
@@ -2668,7 +2668,7 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
         <div className="panel mt-5 flex flex-col gap-5 p-5">
           <div>
             <p className="font-extrabold">Confirmar atualização do CRM</p>
-            <p className="mt-1 text-sm text-slate-500">Serão adicionadas {preview.newCompanyCount} empresa(s). Os colaboradores ausentes nesta exportação serão inativados, sem apagar histórico.</p>
+            <p className="mt-1 text-sm text-slate-500">Nenhuma empresa será criada{preview.newCompanyCount > 0 ? `: ${preview.newCompanyCount} CNPJ(s) fora do catálogo ficam como pendência` : ""}. Os colaboradores ausentes nesta exportação serão inativados, sem apagar histórico.</p>
           </div>
           <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-950">
             <input
@@ -2689,17 +2689,24 @@ function CompanyCatalogImportPage({ onBack, onSynchronized }: {
 
     {result && (
       <div className="panel mt-5 p-5">
-        <p className="font-extrabold">Inclusão concluída</p>
+        <p className="font-extrabold">Atualização concluída</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <ImportMetric label="Adicionadas" value={result.createdCompanyCount.toString()} />
-          <ImportMetric label="Já existentes e ignoradas" value={result.ignoredExistingCompanyCount.toString()} />
-          <ImportMetric label="Cadastro enriquecido" value={result.registryEnrichedCount.toString()} />
+          <ImportMetric label="Empresas vinculadas" value={result.linkedCompanyCount.toString()} />
+          <ImportMetric label="Fora do catálogo" value={result.unregisteredCompanies.length.toString()} />
+          <ImportMetric label="Colaboradores inativados" value={result.memberComparison.departedMemberCount.toString()} />
         </div>
         <p className="mt-4 text-sm text-slate-600">
           Colaboradores: {result.memberComparison.newMemberCount} novo(s), {result.memberComparison.retainedMemberCount} mantido(s), {result.memberComparison.departedMemberCount} inativado(s) e {result.memberComparison.reactivatedMemberCount} reativado(s).
         </p>
-        {result.registryUnavailableCount > 0 && (
-          <p className="mt-3 text-sm text-slate-500">{result.registryUnavailableCount} empresa(s) ficaram sem dados do cadastro público. O catálogo continua funcionando com o nome do EVO.</p>
+        {result.unregisteredCompanies.length > 0 && (
+          <div className="mt-3 text-sm text-slate-500">
+            <p>CNPJs da planilha que não estão no catálogo. Nenhuma empresa foi criada; cadastre manualmente as que forem clientes.</p>
+            <ul className="mt-1 space-y-0.5">
+              {result.unregisteredCompanies.map((company) => (
+                <li key={company.taxId}>{company.evoName} <span className="text-slate-400">{company.formattedTaxId} &middot; {company.memberCount} pessoa(s)</span></li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
     )}
